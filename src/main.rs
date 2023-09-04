@@ -46,12 +46,16 @@ struct Headers {
 }
 
 impl Headers {
+    fn ensure_line_ending(buf: &[u8]) -> IOResult<()> {
+        Ok(if !buf.ends_with(&['\r' as u8, '\n' as u8]) {
+            return Err(IOError::new(ErrorKind::InvalidData, "invalid line ending"))
+        })
+    }
+
     fn read_request_line<R: BufRead>(reader: &mut R) -> IOResult<(String, String, String)> {
         let mut buf: Vec<u8> = Vec::new();
         let n = reader.read_until('\n' as u8, &mut buf)?;
-        if !buf.ends_with(&['\r' as u8, '\n' as u8]) {
-            return Err(IOError::new(ErrorKind::InvalidData, "invalid line ending"))
-        }
+        Headers::ensure_line_ending(&buf)?;
         let line = String::from_iter(buf[..n-2].iter().map(|c| *c as char));
         let mut i = line.splitn(3, ' ');
         if let (Some(method), Some(target), Some(protocol)) = (i.next(), i.next(), i.next()) {
@@ -63,14 +67,14 @@ impl Headers {
     fn read_status_line<R: BufRead>(reader: &mut R) -> IOResult<(String, u16, String)> {
         let mut buf: Vec<u8> = Vec::new();
         let n = reader.read_until('\n' as u8, &mut buf)?;
-        if !buf.ends_with(&['\r' as u8, '\n' as u8]) {
-            return Err(IOError::new(ErrorKind::InvalidData, "invalid line ending"))
-        }
+        Headers::ensure_line_ending(&buf)?;
         let line = String::from_iter(buf[..n-2].iter().map(|c| *c as char));
         let mut i = line.splitn(3, ' ');
         if let (Some(protocol), Some(status), phrase) = (i.next(), i.next(), i.next()) {
             if let Ok(status) = status.parse() {
-                return Ok((protocol.into(), status, phrase.unwrap_or_default().into()))
+                if 200 <= status && status < 600 {
+                    return Ok((protocol.into(), status, phrase.unwrap_or_default().into()))
+                }
             }
         }
         Err(IOError::new(ErrorKind::InvalidData, "invalid status line"))
@@ -82,9 +86,7 @@ impl Headers {
         loop {
             buf.clear();
             let n = reader.read_until('\n' as u8, &mut buf)?;
-            if !buf.ends_with(&['\r' as u8, '\n' as u8]) {
-                return Err(IOError::new(ErrorKind::InvalidData, "invalid line ending"))
-            }
+            Headers::ensure_line_ending(&buf)?;
             if n == 2 { return Ok(Headers { entries }) }
             let line = String::from_iter(buf[..n-2].iter().map(|c| *c as char));
             if let Some((name, value)) = line.split_once(':') {
@@ -106,7 +108,7 @@ impl Headers {
     }
 
     fn write_request_line<W: Write>(method: &str, target: &str, protocol: &str, writer: &mut W) -> IOResult<()> {
-        let mut buf = Vec::new();
+        let mut buf = Vec::with_capacity(method.len() + 1 + target.len() + 1 + protocol.len() + 2);
         buf.extend(method.chars().map(|c| c as u8).chain([' ' as u8]));
         buf.extend(target.chars().map(|c| c as u8).chain([' ' as u8]));
         buf.extend(protocol.chars().map(|c| c as u8).chain(['\r' as u8, '\n' as u8]));
@@ -114,7 +116,8 @@ impl Headers {
     }
 
     fn write_status_line<W: Write>(protocol: &str, status: u16, phrase: &str, writer: &mut W) -> IOResult<()> {
-        let mut buf = Vec::new();
+        assert!(100 <= status && status < 600);
+        let mut buf = Vec::with_capacity(protocol.len() + 1 + 3 + 1 + phrase.len() + 2);
         buf.extend(protocol.chars().map(|c| c as u8).chain([' ' as u8]));
         buf.extend(status.to_string().chars().map(|c| c as u8).chain([' ' as u8]));
         buf.extend(phrase.chars().map(|c| c as u8).chain(['\r' as u8, '\n' as u8]));
@@ -269,10 +272,7 @@ fn copy_chunked<R: BufRead, W: Write>(reader: &mut R, writer: &mut W) -> Result<
         buf.clear();
         match reader.read_until('\n' as u8, &mut buf) {
             Ok(n) => {
-                if !buf.ends_with(&['\r' as u8, '\n' as u8]) {
-                    let e = IOError::new(ErrorKind::InvalidData, "invalid line ending");
-                    return Err(IOErrors::I(e))
-                }
+                if let Err(e) = Headers::ensure_line_ending(&buf) { return Err(IOErrors::I(e)) }
                 if let Err(e) = writer.write_all(&buf[..n]) { return Err(IOErrors::O(e)) }
                 len += n as u64;
                 let hex = String::from_iter(buf[..n-2].iter().map(|c| *c as char));
@@ -281,10 +281,7 @@ fn copy_chunked<R: BufRead, W: Write>(reader: &mut R, writer: &mut W) -> Result<
                     buf.resize(n, 0);
                     match reader.read_exact(&mut buf) {
                         Ok(_) => {
-                            if !buf[..n].ends_with(&['\r' as u8, '\n' as u8]) {
-                                let e = IOError::new(ErrorKind::InvalidData, "invalid line ending");
-                                return Err(IOErrors::I(e))
-                            }
+                            if let Err(e) = Headers::ensure_line_ending(&buf) { return Err(IOErrors::I(e)) }
                             if let Err(e) = writer.write_all(&buf[..n]) { return Err(IOErrors::O(e)) }
                         }
                         Err(e) => {
@@ -665,7 +662,7 @@ fn main() -> IOResult<()> {
                                     }
                                 };
                                 let is_websocket_request = method == "GET"
-                                    && headers.contains("Connection", "Upgrade")
+                                    && headers.contains("Connection", "upgrade")
                                     && headers.contains("Upgrade", "websocket")
                                     && headers.contains("Sec-WebSocket-Version", "13");
                                 if headers.contains("Sec-WebSocket-Extensions", "permessage-deflate") {
@@ -706,18 +703,18 @@ fn main() -> IOResult<()> {
                                         let mut response_reader = BufReader::new(&mut upstream);
                                         match Headers::read_response(&mut response_reader) {
                                             Ok((protocol, status, phrase, mut headers)) => {
-                                                let is_upgradable = headers.contains("Connection", "Upgrade")
+                                                let is_upgradable = headers.contains("Connection", "upgrade")
                                                     && headers.get_content_length().unwrap_or_default() == 0
                                                     && !headers.contains("Transfer-Encoding", "chunked");
                                                 let is_websocket_response = status == 101
-                                                    && headers.contains("Connection", "Upgrade")
+                                                    && headers.contains("Connection", "upgrade")
                                                     && headers.contains("Upgrade", "websocket");
                                                 if status < 200 && !(is_upgradable && is_websocket_request && is_websocket_response) {
                                                     if verbosity >= 1 { eprintln!("Unsupported status: {}", status) }
                                                     if verbosity >= 1 { log(501, Some(0)) }
                                                     return downstream.write_all(NOT_IMPLEMENTED).unwrap_or_default()
                                                 }
-                                                headers.push("Proxy-Connection", "Close");
+                                                headers.push("Proxy-Connection", "close");
                                                 let mut buf = Vec::new();
                                                 headers.write_response(&protocol, status, &phrase, &mut buf).unwrap();
                                                 if let Err(e) = downstream.write_all(&buf) {
