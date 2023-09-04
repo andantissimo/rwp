@@ -36,82 +36,73 @@ extern "C" {
     fn time(time: *mut time_t) -> time_t;
 }
 
+enum IOErrors {
+    I(IOError),
+    O(IOError),
+}
+
 struct Headers {
     entries: Vec<(String, String)>,
 }
 
 impl Headers {
-    fn read_request_line<R: Read>(reader: &mut BufReader<R>) -> Result<(String, String, String), Option<IOError>> {
+    fn read_request_line<R: BufRead>(reader: &mut R) -> IOResult<(String, String, String)> {
         let mut buf: Vec<u8> = Vec::new();
-        match reader.read_until('\n' as u8, &mut buf) {
-            Ok(n) => {
-                if !buf.ends_with(&['\r' as u8, '\n' as u8]) { return Err(None) }
-                let line = String::from_iter(buf[..n-2].iter().map(|c| *c as char));
-                let mut i = line.splitn(3, ' ');
-                if let (Some(method), Some(target), Some(protocol)) = (i.next(), i.next(), i.next()) {
-                    return Ok((method.into(), target.into(), protocol.into()))
-                }
-                Err(None)
-            }
-            Err(e) => Err(Some(e))
+        let n = reader.read_until('\n' as u8, &mut buf)?;
+        if !buf.ends_with(&['\r' as u8, '\n' as u8]) {
+            return Err(IOError::new(ErrorKind::InvalidData, "invalid line ending"))
         }
+        let line = String::from_iter(buf[..n-2].iter().map(|c| *c as char));
+        let mut i = line.splitn(3, ' ');
+        if let (Some(method), Some(target), Some(protocol)) = (i.next(), i.next(), i.next()) {
+            return Ok((method.into(), target.into(), protocol.into()))
+        }
+        Err(IOError::new(ErrorKind::InvalidData, "invalid request line"))
     }
 
-    fn read_status_line<R: Read>(reader: &mut BufReader<R>) -> Result<(String, u16, String), Option<IOError>> {
+    fn read_status_line<R: BufRead>(reader: &mut R) -> IOResult<(String, u16, String)> {
         let mut buf: Vec<u8> = Vec::new();
-        match reader.read_until('\n' as u8, &mut buf) {
-            Ok(n) => {
-                if !buf.ends_with(&['\r' as u8, '\n' as u8]) { return Err(None) }
-                let line = String::from_iter(buf[..n-2].iter().map(|c| *c as char));
-                let mut i = line.splitn(3, ' ');
-                if let (Some(protocol), Some(status), phrase) = (i.next(), i.next(), i.next()) {
-                    if let Ok(status) = status.parse() {
-                        return Ok((protocol.into(), status, phrase.unwrap_or_default().into()))
-                    }
-                }
-                Err(None)
-            }
-            Err(e) => Err(Some(e))
+        let n = reader.read_until('\n' as u8, &mut buf)?;
+        if !buf.ends_with(&['\r' as u8, '\n' as u8]) {
+            return Err(IOError::new(ErrorKind::InvalidData, "invalid line ending"))
         }
+        let line = String::from_iter(buf[..n-2].iter().map(|c| *c as char));
+        let mut i = line.splitn(3, ' ');
+        if let (Some(protocol), Some(status), phrase) = (i.next(), i.next(), i.next()) {
+            if let Ok(status) = status.parse() {
+                return Ok((protocol.into(), status, phrase.unwrap_or_default().into()))
+            }
+        }
+        Err(IOError::new(ErrorKind::InvalidData, "invalid status line"))
     }
 
-    fn read<R: Read>(reader: &mut BufReader<R>) -> Result<Headers, Option<IOError>> {
+    fn read<R: BufRead>(reader: &mut R) -> IOResult<Headers> {
         let mut entries = Vec::new();
         let mut buf: Vec<u8> = Vec::new();
         loop {
             buf.clear();
-            match reader.read_until('\n' as u8, &mut buf) {
-                Ok(n) => {
-                    if !buf.ends_with(&['\r' as u8, '\n' as u8]) { return Err(None) }
-                    if n == 2 { return Ok(Headers { entries }) }
-                    let line = String::from_iter(buf[..n-2].iter().map(|c| *c as char));
-                    if let Some((name, value)) = line.split_once(':') {
-                        entries.push((name.into(), value.trim().into()));
-                    }
-                }
-                Err(e) => { return Err(Some(e)) }
+            let n = reader.read_until('\n' as u8, &mut buf)?;
+            if !buf.ends_with(&['\r' as u8, '\n' as u8]) {
+                return Err(IOError::new(ErrorKind::InvalidData, "invalid line ending"))
+            }
+            if n == 2 { return Ok(Headers { entries }) }
+            let line = String::from_iter(buf[..n-2].iter().map(|c| *c as char));
+            if let Some((name, value)) = line.split_once(':') {
+                entries.push((name.into(), value.trim().into()));
             }
         }
     }
 
-    fn read_request<R: Read>(reader: &mut BufReader<R>) -> Result<(String, String, String, Headers), Option<IOError>> {
-        match Headers::read_request_line(reader) {
-            Ok((method, target, protocol)) => match Headers::read(reader) {
-                Ok(headers) => Ok((method, target, protocol, headers)),
-                Err(e) => Err(e),
-            },
-            Err(e) => Err(e),
-        }
+    fn read_request<R: BufRead>(reader: &mut R) -> IOResult<(String, String, String, Headers)> {
+        let (method, target, protocol) = Headers::read_request_line(reader)?;
+        let headers = Headers::read(reader)?;
+        Ok((method, target, protocol, headers))
     }
 
-    fn read_response<R: Read>(reader: &mut BufReader<R>) -> Result<(String, u16, String, Headers), Option<IOError>> {
-        match Headers::read_status_line(reader) {
-            Ok((protocol, status, phrase)) => match Headers::read(reader) {
-                Ok(headers) => Ok((protocol, status, phrase, headers)),
-                Err(e) => Err(e),
-            },
-            Err(e) => Err(e),
-        }
+    fn read_response<R: BufRead>(reader: &mut R) -> IOResult<(String, u16, String, Headers)> {
+        let (protocol, status, phrase) = Headers::read_status_line(reader)?;
+        let headers = Headers::read(reader)?;
+        Ok((protocol, status, phrase, headers))
     }
 
     fn write_request_line<W: Write>(method: &str, target: &str, protocol: &str, writer: &mut W) -> IOResult<()> {
@@ -131,8 +122,7 @@ impl Headers {
     }
 
     fn get(&self, name: &str) -> Vec<&str> {
-        let lower = name.to_ascii_lowercase();
-        let pat = match lower.as_str() {
+        let pat = match name.to_ascii_lowercase().as_str() {
             "cookie" => |c| c == ';',
             "server" => |_| false,
             _ => |c| c == ',',
@@ -151,9 +141,7 @@ impl Headers {
 
     fn get_content_length(&self) -> Option<u64> {
         if let Some(value) = self.get_once("content-length") {
-            if let Ok(value) = value.parse() {
-                return Some(value)
-            }
+            if let Ok(value) = value.parse() { return Some(value) }
         }
         None
     }
@@ -249,40 +237,43 @@ fn parse_addr(addr: &str) -> Option<IpAddr> {
     None
 }
 
-fn copy<R: Read, W: Write>(reader: &mut R, writer: &mut W) -> Result<u64, (Option<IOError>, Option<IOError>)> {
+fn copy<R: Read, W: Write>(reader: &mut R, writer: &mut W) -> Result<u64, IOErrors> {
     let mut buf = [0; 8192];
     let mut len: u64 = 0;
     loop {
         match reader.read(&mut buf) {
             Ok(n) => {
                 if n == 0 { return Ok(len) }
-                if let Err(e) = writer.write_all(&buf[..n]) { return Err((None, Some(e))) }
+                if let Err(e) = writer.write_all(&buf[..n]) { return Err(IOErrors::O(e)) }
                 len += n as u64;
             }
-            Err(e) => { return Err((Some(e), None)) }
+            Err(e) => { return Err(IOErrors::I(e)) }
         }
     }
 }
 
-fn copy_exact<R: Read, W: Write>(reader: &mut R, writer: &mut W, mut length: u64) -> Result<(), (Option<IOError>, Option<IOError>)> {
+fn copy_exact<R: Read, W: Write>(reader: &mut R, writer: &mut W, mut length: u64) -> Result<(), IOErrors> {
     let mut buf = [0; 8192];
     Ok(while length > 0 {
         let n = length.min(buf.len() as u64) as usize;
-        if let Err(e) = reader.read_exact(&mut buf[..n]) { return Err((Some(e), None)) }
-        if let Err(e) = writer.write_all(&buf[..n]) { return Err((None, Some(e))) }
+        if let Err(e) = reader.read_exact(&mut buf[..n]) { return Err(IOErrors::I(e)) }
+        if let Err(e) = writer.write_all(&buf[..n]) { return Err(IOErrors::O(e)) }
         length -= n as u64;
     })
 }
 
-fn copy_chunked<R: Read, W: Write>(reader: &mut BufReader<R>, writer: &mut W) -> Result<u64, (Option<IOError>, Option<IOError>)> {
+fn copy_chunked<R: BufRead, W: Write>(reader: &mut R, writer: &mut W) -> Result<u64, IOErrors> {
     let mut buf: Vec<u8> = Vec::new();
     let mut len: u64 = 0;
     loop {
         buf.clear();
         match reader.read_until('\n' as u8, &mut buf) {
             Ok(n) => {
-                if !buf.ends_with(&['\r' as u8, '\n' as u8]) { return Err((None, None)) }
-                if let Err(e) = writer.write_all(&buf[..n]) { return Err((None, Some(e))) }
+                if !buf.ends_with(&['\r' as u8, '\n' as u8]) {
+                    let e = IOError::new(ErrorKind::InvalidData, "invalid line ending");
+                    return Err(IOErrors::I(e))
+                }
+                if let Err(e) = writer.write_all(&buf[..n]) { return Err(IOErrors::O(e)) }
                 len += n as u64;
                 let hex = String::from_iter(buf[..n-2].iter().map(|c| *c as char));
                 if let Ok(n) = usize::from_str_radix(&hex, 16) {
@@ -290,27 +281,31 @@ fn copy_chunked<R: Read, W: Write>(reader: &mut BufReader<R>, writer: &mut W) ->
                     buf.resize(n, 0);
                     match reader.read_exact(&mut buf) {
                         Ok(_) => {
-                            if !buf[..n].ends_with(&['\r' as u8, '\n' as u8]) { return Err((None, None)) }
-                            if let Err(e) = writer.write_all(&buf[..n]) { return Err((None, Some(e))) }
+                            if !buf[..n].ends_with(&['\r' as u8, '\n' as u8]) {
+                                let e = IOError::new(ErrorKind::InvalidData, "invalid line ending");
+                                return Err(IOErrors::I(e))
+                            }
+                            if let Err(e) = writer.write_all(&buf[..n]) { return Err(IOErrors::O(e)) }
                         }
                         Err(e) => {
-                            return Err((Some(e), None))
+                            return Err(IOErrors::I(e))
                         }
                     }
                     len += n as u64;
                     if n == 2 { return Ok(len) }
                 } else {
-                    return Err((None, None))
+                    let e = IOError::new(ErrorKind::InvalidData, "invalid chunk length");
+                    return Err(IOErrors::I(e))
                 }
             }
             Err(e) => {
-                return Err((Some(e), None))
+                return Err(IOErrors::I(e))
             }
         }
     }
 }
 
-fn copy_body<R: Read, W: Write>(headers: &Headers, reader: &mut BufReader<R>, writer: &mut W) -> Result<u64, (Option<IOError>, Option<IOError>)> {
+fn copy_body<R: BufRead, W: Write>(headers: &Headers, reader: &mut R, writer: &mut W) -> Result<u64, IOErrors> {
     if let Some(length) = headers.get_content_length() {
         match copy_exact(reader, writer, length) { Ok(_) => Ok(length), Err(e) => Err(e) }
     } else if headers.contains("Transfer-Encoding", "chunked") {
@@ -320,23 +315,23 @@ fn copy_body<R: Read, W: Write>(headers: &Headers, reader: &mut BufReader<R>, wr
     }
 }
 
-fn copy_websocket_frames<R: Read, W: Write>(reader: &mut R, writer: &mut W) -> Result<(), (Option<IOError>, Option<IOError>)> {
+fn copy_websocket_frames<R: Read, W: Write>(reader: &mut R, writer: &mut W) -> Result<(), IOErrors> {
     loop {
         let mut buf = [0; 2];
-        if let Err(e) = reader.read_exact(&mut buf) { return Err((Some(e), None)) }
-        if let Err(e) = writer.write_all(&buf) { return Err((None, Some(e))) }
+        if let Err(e) = reader.read_exact(&mut buf) { return Err(IOErrors::I(e)) }
+        if let Err(e) = writer.write_all(&buf) { return Err(IOErrors::O(e)) }
         let opcode = buf[0] & 0x0F;
         let masked = (buf[1] & 0x80) != 0;
         let mut length = (buf[1] & 0x7F) as u64;
         if length == 126 {
-            if let Err(e) = reader.read_exact(&mut buf) { return Err((Some(e), None)) }
-            if let Err(e) = writer.write_all(&buf) { return Err((None, Some(e))) }
+            if let Err(e) = reader.read_exact(&mut buf) { return Err(IOErrors::I(e)) }
+            if let Err(e) = writer.write_all(&buf) { return Err(IOErrors::O(e)) }
             length = u16::from_be_bytes(buf) as u64;
         }
         if length == 127 {
             let mut buf = [0; 8];
-            if let Err(e) = reader.read_exact(&mut buf) { return  Err((Some(e), None)) }
-            if let Err(e) = writer.write_all(&buf) { return Err((None, Some(e))) }
+            if let Err(e) = reader.read_exact(&mut buf) { return  Err(IOErrors::I(e)) }
+            if let Err(e) = writer.write_all(&buf) { return Err(IOErrors::O(e)) }
             length = u64::from_be_bytes(buf);
         }
         if masked { copy_exact(reader, writer, 4)? }
@@ -473,7 +468,7 @@ fn main() -> IOResult<()> {
         HTTP/1.1 505 HTTP Version Not Supported\r\n\
         \r\n";
 
-    let print_help_and_exit = |code| {
+    let print_help_and_exit = |code| -> ! {
         eprintln!("Usage: rwp [options...]");
         eprintln!();
         eprintln!("Options:");
@@ -485,39 +480,34 @@ fn main() -> IOResult<()> {
         eprintln!("  -p, --port <number>  Listen on port (default: 8080)");
         exit(code)
     };
-    if args().skip(1).any(|a| a == "-h" || a == "--help") {
-        print_help_and_exit(0)
-    }
-    let (verbose, ipv4only, hosts_files, port) = {
-        let mut verbose = 1;
+    let (verbosity, ipv4only, hosts_files, port) = {
+        let mut verbosity = 1;
         let mut ipv4only = false;
         let mut hosts = vec!["/etc/hosts".into()];
         let mut port = 8080;
         let mut i = args().skip(1);
         while let Some(k) = i.next() {
             match k.as_str() {
-                "-s" | "--silent" => {
-                    verbose -= 1
+                "-h" | "--help"      => print_help_and_exit(0),
+                "-s" | "--silent"    => verbosity -= 1,
+                "-v" | "--verbose"   => verbosity += 1,
+                "-vv"                => verbosity += 2,
+                "-4" | "--ipv4-only" => ipv4only = true,
+                "-H" | "--hosts" => match i.next() {
+                    Some(v) => hosts.push(v),
+                    _ => print_help_and_exit(1)
                 }
-                "-v" | "--verbose" => {
-                    verbose += 1
-                }
-                "-vv" => {
-                    verbose += 2
-                }
-                "-4" | "--ipv4-only" => {
-                    ipv4only = true
-                }
-                "-H" | "--hosts" => {
-                    if let Some(v) = i.next() { hosts.push(v) }
-                }
-                "-p" | "--port" => {
-                    if let Some(v) = i.next() { port = v.parse().unwrap_or(port) }
+                "-p" | "--port" => match i.next() {
+                    Some(v) => match v.parse() {
+                        Ok(v) => port = v,
+                        _ => print_help_and_exit(1)
+                    }
+                    _ => print_help_and_exit(1)
                 }
                 _ => print_help_and_exit(1)
             }
         }
-        (verbose, ipv4only, hosts, port)
+        (verbosity, ipv4only, hosts, port)
     };
     let resolver = Resolver::new(&hosts_files, Duration::from_secs(120));
 
@@ -537,51 +527,51 @@ fn main() -> IOResult<()> {
                     match Headers::read_request(&mut request_reader) {
                         Ok((method, target, protocol, mut headers)) => {
                             let log = |status: u16, sent: Option<u64>| {
-                                let sent = if let Some(sent) = sent { format!("{}", sent) } else { "-".into() };
+                                let sent = if let Some(sent) = sent { sent.to_string() } else { "-".into() };
                                 println!("{} - - [{}] \"{} {} {}\" {} {}",
                                     &remote_addr, &request_time, &method, &target, &protocol, status, &sent);
                             };
                             if protocol != "HTTP/1.1" && protocol != "HTTP/1.0" {
-                                if verbose >= 2 { eprintln!("Protocol not supported: {}", protocol) }
-                                if verbose >= 1 { log(505, Some(0)) }
+                                if verbosity >= 2 { eprintln!("Protocol not supported: {}", protocol) }
+                                if verbosity >= 1 { log(505, Some(0)) }
                                 return downstream.write_all(HTTP_VERSION_NOT_SUPPORTED).unwrap_or_default()
                             }
                             if method == "CONNECT" {
                                 let (hostname, port) = match parse_host(&target) {
                                     (hostname, Some(port)) => (hostname, port),
                                     _ => {
-                                        if verbose >= 3 { eprintln!("Malformed target: {}", &target) }
-                                        if verbose >= 1 { log(400, Some(0)) }
+                                        if verbosity >= 3 { eprintln!("Malformed target: {}", target) }
+                                        if verbosity >= 1 { log(400, Some(0)) }
                                         return downstream.write_all(BAD_REQUEST).unwrap_or_default()
                                     }
                                 };
                                 if hostname.eq_ignore_ascii_case("localhost") {
-                                    if verbose >= 3 { eprintln!("Forbidden host: {}", hostname) }
-                                    if verbose >= 1 { log(403, Some(0)) }
+                                    if verbosity >= 3 { eprintln!("Forbidden host: {}", hostname) }
+                                    if verbosity >= 1 { log(403, Some(0)) }
                                     return downstream.write_all(FORBIDDEN).unwrap_or_default()
                                 }
                                 let addr = match parse_addr(hostname) {
                                     Some(addr) if !is_forbidden(&addr) => addr,
                                     Some(_) => {
-                                        if verbose >= 3 { eprintln!("Forbidden host: {}", hostname) }
-                                        if verbose >= 1 { log(403, Some(0)) }
+                                        if verbosity >= 3 { eprintln!("Forbidden host: {}", hostname) }
+                                        if verbosity >= 1 { log(403, Some(0)) }
                                         return downstream.write_all(FORBIDDEN).unwrap_or_default()
                                     }
                                     _ if !is_hostname(hostname) => {
-                                        if verbose >= 3 { eprintln!("Malformed host: {}", hostname) }
-                                        if verbose >= 1 { log(400, Some(0)) }
+                                        if verbosity >= 3 { eprintln!("Malformed host: {}", hostname) }
+                                        if verbosity >= 1 { log(400, Some(0)) }
                                         return downstream.write_all(BAD_REQUEST).unwrap_or_default()
                                     }
                                     _ => match resolver.resolve(hostname) {
-                                        Ok(addr) if is_forbidden(&addr) => {
-                                            if verbose >= 3 { eprintln!("Prohibited host: {}", hostname) }
-                                            if verbose >= 1 { log(502, Some(0)) }
-                                            return downstream.write_all(BAD_GATEWAY).unwrap_or_default()
+                                        Ok(addr) if !is_forbidden(&addr) => addr,
+                                        Ok(_) => {
+                                            if verbosity >= 3 { eprintln!("Forbidden host: {}", hostname) }
+                                            if verbosity >= 1 { log(403, Some(0)) }
+                                            return downstream.write_all(FORBIDDEN).unwrap_or_default()
                                         }
-                                        Ok(addr) => addr,
                                         _ => {
-                                            if verbose >= 1 { eprintln!("Name not resolved: {}", hostname) }
-                                            if verbose >= 1 { log(502, Some(0)) }
+                                            if verbosity >= 1 { eprintln!("Name not resolved: {}", hostname) }
+                                            if verbosity >= 1 { log(502, Some(0)) }
                                             return downstream.write_all(BAD_GATEWAY).unwrap_or_default();
                                         }
                                     }
@@ -589,7 +579,7 @@ fn main() -> IOResult<()> {
                                 match TcpStream::connect((addr, port)) {
                                     Ok(upstream) => {
                                         downstream.write_all(b"HTTP/1.1 200 OK\r\n\r\n").unwrap_or_default();
-                                        if verbose >= 1 { log(200, None) }
+                                        if verbosity >= 1 { log(200, None) }
                                         let mut downstream_reader = downstream.try_clone().unwrap();
                                         let mut downstream_writer = downstream.try_clone().unwrap();
                                         let mut upstream_reader = upstream.try_clone().unwrap();
@@ -597,13 +587,13 @@ fn main() -> IOResult<()> {
                                         let writing_target = target.clone();
                                         let upload = spawn(move || {
                                             match copy(&mut downstream_reader, &mut upstream_writer) {
-                                                Err((Some(e), None)) => {
-                                                    if verbose >= 2 { eprintln!("Error while reading packets from downstream: {}", remote_addr) }
-                                                    if verbose >= 3 { eprintln!("  {:?}", e) }
+                                                Err(IOErrors::I(e)) => {
+                                                    if verbosity >= 2 { eprintln!("Error while reading packets from downstream: {}", remote_addr) }
+                                                    if verbosity >= 3 { eprintln!("  {:?}", e) }
                                                 }
-                                                Err((_, Some(e))) => {
-                                                    if verbose >= 1 { eprintln!("Error while writing packets to upstream: {}", writing_target) }
-                                                    if verbose >= 2 { eprintln!("  {:?}", e) }
+                                                Err(IOErrors::O(e)) => {
+                                                    if verbosity >= 1 { eprintln!("Error while writing packets to upstream: {}", writing_target) }
+                                                    if verbosity >= 2 { eprintln!("  {:?}", e) }
                                                 }
                                                 _ => {}
                                             }
@@ -611,16 +601,16 @@ fn main() -> IOResult<()> {
                                         let reading_target = target.clone();
                                         let download = spawn(move || {
                                             match copy(&mut upstream_reader, &mut downstream_writer) {
-                                                Err((Some(e), None)) if e.kind() != ErrorKind::ConnectionReset => {
-                                                    if verbose >= 2 { eprintln!("Connection reset from upstream: {}", reading_target) }
+                                                Err(IOErrors::I(e)) if e.kind() != ErrorKind::ConnectionReset => {
+                                                    if verbosity >= 2 { eprintln!("Connection reset from upstream: {}", reading_target) }
                                                 }
-                                                Err((Some(e), None)) => {
-                                                    if verbose >= 1 { eprintln!("Error while reading packets from upstream: {}", reading_target) }
-                                                    if verbose >= 2 { eprintln!("  {:?}", e) }
+                                                Err(IOErrors::I(e)) => {
+                                                    if verbosity >= 1 { eprintln!("Error while reading packets from upstream: {}", reading_target) }
+                                                    if verbosity >= 2 { eprintln!("  {:?}", e) }
                                                 }
-                                                Err((None, Some(e))) => {
-                                                    if verbose >= 2 { eprintln!("Error while writing packets to downstream: {}", remote_addr) }
-                                                    if verbose >= 3 { eprintln!("  {:?}", e) }
+                                                Err(IOErrors::O(e)) => {
+                                                    if verbosity >= 2 { eprintln!("Error while writing packets to downstream: {}", remote_addr) }
+                                                    if verbosity >= 3 { eprintln!("  {:?}", e) }
                                                 }
                                                 _ => {}
                                             }
@@ -629,47 +619,47 @@ fn main() -> IOResult<()> {
                                         download.join().unwrap_or_default();
                                     }
                                     Err(e) => {
-                                        if verbose >= 1 { eprintln!("Error while connecting to upstream: {}", target) }
-                                        if verbose >= 2 { eprintln!("  {:?}", e) }
-                                        if verbose >= 1 { log(502, Some(0)) }
+                                        if verbosity >= 1 { eprintln!("Error while connecting to upstream: {}", target) }
+                                        if verbosity >= 2 { eprintln!("  {:?}", e) }
+                                        if verbosity >= 1 { log(502, Some(0)) }
                                         return downstream.write_all(BAD_GATEWAY).unwrap_or_default();
                                     }
                                 }
                             } else if let Some((scheme, host, target)) = parse_uri(&target) {
                                 if scheme != "http" {
-                                    if verbose >= 3 { eprintln!("Unsupported scheme: {}", scheme) }
-                                    if verbose >= 1 { log(501, Some(0)) }
+                                    if verbosity >= 3 { eprintln!("Unsupported scheme: {}", scheme) }
+                                    if verbosity >= 1 { log(501, Some(0)) }
                                     return downstream.write_all(NOT_IMPLEMENTED).unwrap_or_default()
                                 }
                                 let (hostname, port) = parse_host(host);
                                 let port = port.unwrap_or(80);
                                 if hostname.eq_ignore_ascii_case("localhost") {
-                                    if verbose >= 3 { eprintln!("Forbidden host: {}", hostname) }
-                                    if verbose >= 1 { log(403, Some(0)) }
+                                    if verbosity >= 3 { eprintln!("Forbidden host: {}", hostname) }
+                                    if verbosity >= 1 { log(403, Some(0)) }
                                     return downstream.write_all(FORBIDDEN).unwrap_or_default()
                                 }
                                 let addr = match parse_addr(hostname) {
                                     Some(addr) if !is_forbidden(&addr) => addr,
                                     Some(_) => {
-                                        if verbose >= 3 { eprintln!("Forbidden host: {}", hostname) }
-                                        if verbose >= 1 { log(403, Some(0)) }
+                                        if verbosity >= 3 { eprintln!("Forbidden host: {}", hostname) }
+                                        if verbosity >= 1 { log(403, Some(0)) }
                                         return downstream.write_all(FORBIDDEN).unwrap_or_default()
                                     }
                                     _ if !is_hostname(hostname) => {
-                                        if verbose >= 3 { eprintln!("Malformed host: {}", hostname) }
-                                        if verbose >= 1 { log(400, Some(0)) }
+                                        if verbosity >= 3 { eprintln!("Malformed host: {}", hostname) }
+                                        if verbosity >= 1 { log(400, Some(0)) }
                                         return downstream.write_all(BAD_REQUEST).unwrap_or_default()
                                     }
                                     _ => match resolver.resolve(hostname) {
-                                        Ok(addr) if is_forbidden(&addr) => {
-                                            if verbose >= 3 { eprintln!("Prohibited host: {}", hostname) }
-                                            if verbose >= 1 { log(502, Some(0)) }
-                                            return downstream.write_all(BAD_GATEWAY).unwrap_or_default()
+                                        Ok(addr) if !is_forbidden(&addr) => addr,
+                                        Ok(_) => {
+                                            if verbosity >= 3 { eprintln!("Forbidden host: {}", hostname) }
+                                            if verbosity >= 1 { log(403, Some(0)) }
+                                            return downstream.write_all(FORBIDDEN).unwrap_or_default()
                                         }
-                                        Ok(addr) => addr,
                                         _ => {
-                                            if verbose >= 1 { eprintln!("Name not resolved: {}", hostname) }
-                                            if verbose >= 1 { log(502, Some(0)) }
+                                            if verbosity >= 1 { eprintln!("Name not resolved: {}", hostname) }
+                                            if verbosity >= 1 { log(502, Some(0)) }
                                             return downstream.write_all(BAD_GATEWAY).unwrap_or_default();
                                         }
                                     }
@@ -679,8 +669,8 @@ fn main() -> IOResult<()> {
                                     && headers.contains("Upgrade", "websocket")
                                     && headers.contains("Sec-WebSocket-Version", "13");
                                 if headers.contains("Sec-WebSocket-Extensions", "permessage-deflate") {
-                                    if verbose >= 1 { eprintln!("Unsupported WebSocket extension: {}", "permessage-deflate") }
-                                    if verbose >= 1 { log(501, Some(0)) }
+                                    if verbosity >= 1 { eprintln!("Unsupported WebSocket extension: {}", "permessage-deflate") }
+                                    if verbosity >= 1 { log(501, Some(0)) }
                                     return downstream.write_all(NOT_IMPLEMENTED).unwrap_or_default()
                                 }
                                 headers.retain(|name, _| !name.to_ascii_lowercase().starts_with("proxy-"));
@@ -689,28 +679,24 @@ fn main() -> IOResult<()> {
                                         let mut buf = Vec::new();
                                         headers.write_request(&method, &target, &protocol, &mut buf).unwrap();
                                         if let Err(e) = upstream.write_all(&buf) {
-                                            if verbose >= 1 { eprintln!("Error while writing headers to upstream: {}", host) }
-                                            if verbose >= 2 { eprintln!("  {:?}", e) }
-                                            if verbose >= 1 { log(502, Some(0)) }
+                                            if verbosity >= 1 { eprintln!("Error while writing headers to upstream: {}", host) }
+                                            if verbosity >= 2 { eprintln!("  {:?}", e) }
+                                            if verbosity >= 1 { log(502, Some(0)) }
                                             return downstream.write_all(BAD_GATEWAY).unwrap_or_default()
                                         }
                                         match method.as_str() {
                                             "GET" | "HEAD" | "OPTIONS" => {}
                                             _ => {
                                                 match copy_body(&headers, &mut request_reader, &mut upstream) {
-                                                    Err((None, None)) => {
-                                                        if verbose >= 2 { eprintln!("Error while parsing body from downstream: {}", remote_addr) }
-                                                        return if verbose >= 1 { log(499, Some(0)) }
+                                                    Err(IOErrors::I(e)) => {
+                                                        if verbosity >= 2 { eprintln!("Error while reading body from downstream: {}", remote_addr) }
+                                                        if verbosity >= 3 { eprintln!("  {:?}", e) }
+                                                        return if verbosity >= 1 { log(499, Some(0)) }
                                                     }
-                                                    Err((Some(e), None)) => {
-                                                        if verbose >= 2 { eprintln!("Error while reading body from downstream: {}", remote_addr) }
-                                                        if verbose >= 3 { eprintln!("  {:?}", e) }
-                                                        return if verbose >= 1 { log(499, Some(0)) }
-                                                    }
-                                                    Err((None, Some(e))) => {
-                                                        if verbose >= 1 { eprintln!("Error while writing body to upstream: {}", host) }
-                                                        if verbose >= 2 { eprintln!("  {:?}", e) }
-                                                        if verbose >= 1 { log(502, Some(0)) }
+                                                    Err(IOErrors::O(e)) => {
+                                                        if verbosity >= 1 { eprintln!("Error while writing body to upstream: {}", host) }
+                                                        if verbosity >= 2 { eprintln!("  {:?}", e) }
+                                                        if verbosity >= 1 { log(502, Some(0)) }
                                                         return downstream.write_all(BAD_GATEWAY).unwrap_or_default()
                                                     }
                                                     _ => {}
@@ -727,44 +713,39 @@ fn main() -> IOResult<()> {
                                                     && headers.contains("Connection", "Upgrade")
                                                     && headers.contains("Upgrade", "websocket");
                                                 if status < 200 && !(is_upgradable && is_websocket_request && is_websocket_response) {
-                                                    if verbose >= 1 { eprintln!("Unsupported status: {}", status) }
-                                                    if verbose >= 1 { log(501, Some(0)) }
+                                                    if verbosity >= 1 { eprintln!("Unsupported status: {}", status) }
+                                                    if verbosity >= 1 { log(501, Some(0)) }
                                                     return downstream.write_all(NOT_IMPLEMENTED).unwrap_or_default()
                                                 }
                                                 headers.push("Proxy-Connection", "Close");
                                                 let mut buf = Vec::new();
                                                 headers.write_response(&protocol, status, &phrase, &mut buf).unwrap();
                                                 if let Err(e) = downstream.write_all(&buf) {
-                                                    if verbose >= 2 { eprintln!("Error while writing headers to downstream: {}", remote_addr) }
-                                                    if verbose >= 3 { eprintln!("  {:?}", e) }
-                                                    return if verbose >= 1 { log(499, Some(0)) }
+                                                    if verbosity >= 2 { eprintln!("Error while writing headers to downstream: {}", remote_addr) }
+                                                    if verbosity >= 3 { eprintln!("  {:?}", e) }
+                                                    return if verbosity >= 1 { log(499, Some(0)) }
                                                 }
                                                 if method == "HEAD" || !is_websocket_response && status < 200 || status == 204 || status == 304 {
-                                                    if verbose >= 1 { log(status, Some(0)) }
+                                                    if verbosity >= 1 { log(status, Some(0)) }
                                                 } else {
                                                     match copy_body(&headers, &mut response_reader, &mut downstream) {
                                                         Ok(sent) => {
-                                                            if verbose >= 1 { log(status, Some(sent)) }
+                                                            if verbosity >= 1 { log(status, Some(sent)) }
                                                         }
-                                                        Err((None, None)) => {
-                                                            if verbose >= 1 { eprintln!("Error while parsing body from upstream: {}", host) }
-                                                            return if verbose >= 1 { log(444, None) }
+                                                        Err(IOErrors::I(e)) => {
+                                                            if verbosity >= 1 { eprintln!("Error while reading body from upstream: {}", host) }
+                                                            if verbosity >= 2 { eprintln!("  {:?}", e) }
+                                                            return if verbosity >= 1 { log(444, None) }
                                                         }
-                                                        Err((Some(e), None)) => {
-                                                            if verbose >= 1 { eprintln!("Error while reading body from upstream: {}", host) }
-                                                            if verbose >= 2 { eprintln!("  {:?}", e) }
-                                                            return if verbose >= 1 { log(444, None) }
+                                                        Err(IOErrors::O(e)) => {
+                                                            if verbosity >= 2 { eprintln!("Error while writing body to downstream: {}", remote_addr) }
+                                                            if verbosity >= 3 { eprintln!("  {:?}", e) }
+                                                            return if verbosity >= 1 { log(499, None) }
                                                         }
-                                                        Err((None, Some(e))) => {
-                                                            if verbose >= 2 { eprintln!("Error while writing body to downstream: {}", remote_addr) }
-                                                            if verbose >= 3 { eprintln!("  {:?}", e) }
-                                                            return if verbose >= 1 { log(499, None) }
-                                                        }
-                                                        _ => {}
                                                     }
                                                 }
                                                 if is_websocket_response {
-                                                    if verbose >= 1 { log(status, None) }
+                                                    if verbosity >= 1 { log(status, None) }
                                                     let mut downstream_reader = downstream.try_clone().unwrap();
                                                     let mut downstream_writer = downstream.try_clone().unwrap();
                                                     let mut upstream_reader = upstream.try_clone().unwrap();
@@ -772,13 +753,13 @@ fn main() -> IOResult<()> {
                                                     let writing_host = host.to_string();
                                                     let upload = spawn(move || {
                                                         match copy_websocket_frames(&mut downstream_reader, &mut upstream_writer) {
-                                                            Err((Some(e), None)) => {
-                                                                if verbose >= 2 { eprintln!("Error while reading frames from downstream: {}", remote_addr) }
-                                                                if verbose >= 3 { eprintln!("  {:?}", e) }
+                                                            Err(IOErrors::I(e)) => {
+                                                                if verbosity >= 2 { eprintln!("Error while reading frames from downstream: {}", remote_addr) }
+                                                                if verbosity >= 3 { eprintln!("  {:?}", e) }
                                                             }
-                                                            Err((_, Some(e))) => {
-                                                                if verbose >= 1 { eprintln!("Error while writing frames to upstream: {}", writing_host) }
-                                                                if verbose >= 2 { eprintln!("  {:?}", e) }
+                                                            Err(IOErrors::O(e)) => {
+                                                                if verbosity >= 1 { eprintln!("Error while writing frames to upstream: {}", writing_host) }
+                                                                if verbosity >= 2 { eprintln!("  {:?}", e) }
                                                             }
                                                             _ => {}
                                                         }
@@ -786,13 +767,13 @@ fn main() -> IOResult<()> {
                                                     let reading_host = host.to_string();
                                                     let download = spawn(move || {
                                                         match copy_websocket_frames(&mut upstream_reader, &mut downstream_writer) {
-                                                            Err((Some(e), None)) => {
-                                                                if verbose >= 1 { eprintln!("Error while reading frames from upstream: {}", reading_host) }
-                                                                if verbose >= 2 { eprintln!("  {:?}", e) }
+                                                            Err(IOErrors::I(e)) => {
+                                                                if verbosity >= 1 { eprintln!("Error while reading frames from upstream: {}", reading_host) }
+                                                                if verbosity >= 2 { eprintln!("  {:?}", e) }
                                                             }
-                                                            Err((None, Some(e))) => {
-                                                                if verbose >= 2 { eprintln!("Error while writing frames to downstream: {}", remote_addr) }
-                                                                if verbose >= 3 { eprintln!("  {:?}", e) }
+                                                            Err(IOErrors::O(e)) => {
+                                                                if verbosity >= 2 { eprintln!("Error while writing frames to downstream: {}", remote_addr) }
+                                                                if verbosity >= 3 { eprintln!("  {:?}", e) }
                                                             }
                                                             _ => {}
                                                         }
@@ -801,44 +782,36 @@ fn main() -> IOResult<()> {
                                                     download.join().unwrap_or_default();
                                                 }
                                             }
-                                            Err(Some(e)) => {
-                                                if verbose >= 1 { eprintln!("Error while reading headers from upstream: {}", host) }
-                                                if verbose >= 2 { eprintln!("  {:?}", e) }
-                                                if verbose >= 1 { log(502, Some(0)) }
-                                                return downstream.write_all(BAD_GATEWAY).unwrap_or_default();
-                                            }
-                                            Err(None) => {
-                                                if verbose >= 1 { eprintln!("Error while parsing headers from upstream: {}", host) }
-                                                if verbose >= 1 { log(502, Some(0)) }
+                                            Err(e) => {
+                                                if verbosity >= 1 { eprintln!("Error while reading headers from upstream: {}", host) }
+                                                if verbosity >= 2 { eprintln!("  {:?}", e) }
+                                                if verbosity >= 1 { log(502, Some(0)) }
                                                 return downstream.write_all(BAD_GATEWAY).unwrap_or_default();
                                             }
                                         }
                                     }
                                     Err(e) => {
-                                        if verbose >= 1 { eprintln!("Error while connecting to upstream: {}", host) }
-                                        if verbose >= 2 { eprintln!("  {:?}", e) }
-                                        if verbose >= 1 { log(502, Some(0)) }
+                                        if verbosity >= 1 { eprintln!("Error while connecting to upstream: {}", host) }
+                                        if verbosity >= 2 { eprintln!("  {:?}", e) }
+                                        if verbosity >= 1 { log(502, Some(0)) }
                                         return downstream.write_all(BAD_GATEWAY).unwrap_or_default();
                                     }
                                 }
                             } else {
-                                if verbose >= 3 { eprintln!("Bad request: {} {} {}", method, target, protocol) }
-                                if verbose >= 1 { log(400, Some(0)) }
+                                if verbosity >= 3 { eprintln!("Bad request: {} {} {}", method, target, protocol) }
+                                if verbosity >= 1 { log(400, Some(0)) }
                                 return downstream.write_all(BAD_REQUEST).unwrap_or_default()
                             }
                         }
-                        Err(Some(e)) => {
-                            if verbose >= 2 { eprintln!("Error while reading headers from downstream: {}", remote_addr) }
-                            if verbose >= 3 { eprintln!("  {:?}", e) }
-                        }
-                        Err(None) => {
-                            if verbose >= 2 { eprintln!("Error while parsing headers from downstream: {}", remote_addr) }
+                        Err(e) => {
+                            if verbosity >= 2 { eprintln!("Error while reading headers from downstream: {}", remote_addr) }
+                            if verbosity >= 3 { eprintln!("  {:?}", e) }
                         }
                     }
                 });
             }
             Err(e) => {
-                if verbose >= 1 { eprintln!("TCP incoming error: {:?}", e) }
+                if verbosity >= 1 { eprintln!("TCP incoming error: {:?}", e) }
             }
         }
     })
