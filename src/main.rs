@@ -10,6 +10,11 @@ use std::sync::{Arc, RwLock};
 use std::thread::{sleep, spawn};
 use std::time::{Duration, SystemTime};
 
+#[cfg(feature = "htpasswd")]
+mod ncsa;
+#[cfg(feature = "htpasswd")]
+use crate::ncsa::Htpasswd;
+
 #[allow(non_camel_case_types)]
 type time_t = c_long;
 
@@ -351,18 +356,15 @@ impl Resolver {
         for path in hosts_files.iter() {
             Resolver::parse(&read_to_string(&path).unwrap_or_default(), &mut hosts.write().unwrap())
         }
-        let interval = Duration::from_secs(4);
         let hosts_writer = hosts.clone();
         spawn(move || {
-            let min_mtime = SystemTime::UNIX_EPOCH;
-            let get_mtime = |path: &str| match metadata(path) {
-                Ok(m) => m.modified().unwrap(),
-                _ => min_mtime,
-            };
-            let mut lastmtime = hosts_files.iter().fold(min_mtime, |t, p| get_mtime(p).max(t));
+            let init = SystemTime::UNIX_EPOCH;
+            let f = |time: SystemTime, path: &String|
+                metadata(&path).and_then(|m| m.modified()).unwrap_or(init).max(time);
+            let mut lastmtime = hosts_files.iter().fold(init, f);
             loop {
-                sleep(interval);
-                let mtime = hosts_files.iter().fold(min_mtime, |t, p| get_mtime(p).max(t));
+                sleep(Duration::from_secs(4));
+                let mtime = hosts_files.iter().fold(init, f);
                 if mtime == lastmtime { continue }
                 lastmtime = mtime;
                 let mut hosts = HashMap::new();
@@ -422,6 +424,7 @@ impl Resolver {
     }
 }
 
+#[derive(Clone, Copy)]
 struct LocalTime {
     time: time_t,
 }
@@ -454,6 +457,11 @@ fn main() -> IOResult<()> {
         \r\n";
     const FORBIDDEN: &[u8] = b"\
         HTTP/1.1 403 Forbidden\r\n\
+        \r\n";
+    #[cfg(feature = "htpasswd")]
+    const PROXY_AUTHENTICATION_REQUIRED: &[u8] = b"\
+        HTTP/1.1 407 Proxy Authentication Required\r\n\
+        Proxy-Authentication: Basic\r\n\
         \r\n";
     const NOT_IMPLEMENTED: &[u8] = b"\
         HTTP/1.1 501 Not Implemented\r\n\
@@ -507,6 +515,8 @@ fn main() -> IOResult<()> {
         (verbosity, ipv4only, hosts, port)
     };
     let resolver = Resolver::new(&hosts_files, Duration::from_secs(120));
+    #[cfg(feature = "htpasswd")]
+    let htpasswd = Htpasswd::new();
 
     let listener = TcpListener::bind(if ipv4only {
         SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), port)
@@ -519,6 +529,8 @@ fn main() -> IOResult<()> {
                 let remote_addr = unmap_ipv4_in_ipv6(&downstream.peer_addr().unwrap().ip());
                 let request_time = LocalTime::now();
                 let resolver = resolver.clone();
+                #[cfg(feature = "htpasswd")]
+                let htpasswd = htpasswd.clone();
                 spawn(move || {
                     let mut request_reader = BufReader::new(&mut downstream);
                     match Headers::read_request(&mut request_reader) {
@@ -532,6 +544,11 @@ fn main() -> IOResult<()> {
                                 if verbosity >= 2 { eprintln!("Protocol not supported: {}", protocol) }
                                 if verbosity >= 1 { log(505, Some(0)) }
                                 return downstream.write_all(HTTP_VERSION_NOT_SUPPORTED).unwrap_or_default()
+                            }
+                            #[cfg(feature = "htpasswd")]
+                            if !htpasswd.is_empty() && !headers.get_once("Proxy-Authorization").is_some_and(|v| htpasswd.authorize(v)) {
+                                if verbosity >= 1 { log(407, Some(0)) }
+                                return downstream.write_all(PROXY_AUTHENTICATION_REQUIRED).unwrap_or_default()
                             }
                             if method == "CONNECT" {
                                 let (hostname, port) = match parse_host(&target) {
