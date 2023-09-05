@@ -32,15 +32,15 @@ extern "C" {
 #[allow(non_snake_case)]
 #[cfg(openssl10)]
 #[inline]
-fn EVP_MD_CTX_new() -> *mut EVP_MD_CTX {
-    unsafe { EVP_MD_CTX_create() }
+unsafe fn EVP_MD_CTX_new() -> *mut EVP_MD_CTX {
+    EVP_MD_CTX_create()
 }
 
 #[allow(non_snake_case)]
 #[cfg(openssl10)]
 #[inline]
-fn EVP_MD_CTX_free(ctx: *mut EVP_MD_CTX) {
-    unsafe { EVP_MD_CTX_destroy(ctx) }
+unsafe fn EVP_MD_CTX_free(ctx: *mut EVP_MD_CTX) {
+    EVP_MD_CTX_destroy(ctx)
 }
 
 #[derive(Clone)]
