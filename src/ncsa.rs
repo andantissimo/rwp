@@ -7,10 +7,10 @@ use std::thread::{sleep, spawn};
 use std::time::{Duration, SystemTime};
 
 #[allow(non_camel_case_types)]
-type EVP_MD = c_void;
+enum EVP_MD {}
 
 #[allow(non_camel_case_types)]
-type EVP_MD_CTX = c_void;
+enum EVP_MD_CTX {}
 
 #[link(name = "crypto")]
 extern "C" {
