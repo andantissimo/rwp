@@ -210,7 +210,7 @@ fn is_forbidden(addr: &IpAddr) -> bool {
 fn is_hostname(hostname: &str) -> bool {
     hostname.split('.').all(|s| {
         s.len() > 0 &&
-        s.chars().nth(0).unwrap().is_ascii_alphanumeric() &&
+        s.chars().next().unwrap().is_ascii_alphanumeric() &&
         s.chars().last().unwrap().is_ascii_alphanumeric() &&
         s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
     })
@@ -418,7 +418,7 @@ impl Resolver {
         if let Some((addr, eol)) = self.cache.read().unwrap().get(hostname) {
             if now < *eol { return Ok(*addr) }
         }
-        let addr = format!("{}:0", hostname).to_socket_addrs()?.nth(0).unwrap().ip();
+        let addr = format!("{}:0", hostname).to_socket_addrs()?.next().unwrap().ip();
         self.cache.write().unwrap().insert(hostname.into(), (addr, now + self.ttl));
         Ok(addr)
     }
