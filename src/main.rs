@@ -605,7 +605,7 @@ fn main() -> IoResult<()> {
                                         let reading_target = target.clone();
                                         let download = spawn(move || {
                                             match copy(&mut upstream_reader, &mut downstream_writer) {
-                                                Err(IoErr::I(e)) if e.kind() != ErrorKind::ConnectionReset => {
+                                                Err(IoErr::I(e)) if e.kind() == ErrorKind::ConnectionReset => {
                                                     if verbosity >= 2 { eprintln!("Connection reset from upstream: {}", reading_target) }
                                                 }
                                                 Err(IoErr::I(e)) => {
