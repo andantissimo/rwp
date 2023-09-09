@@ -4,7 +4,7 @@ use std::fs::{metadata, read_to_string};
 use std::ptr::null;
 use std::sync::{Arc, RwLock};
 use std::thread::{sleep, spawn};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, UNIX_EPOCH};
 
 #[allow(non_camel_case_types)]
 enum EVP_MD {}
@@ -52,20 +52,19 @@ impl Htpasswd {
     pub fn new() -> Htpasswd {
         let path = ".htpasswd";
         let mut entries = HashMap::new();
-        Htpasswd::parse(&read_to_string(path).unwrap_or_default(), &mut entries);
+        Self::parse(&read_to_string(path).unwrap_or_default(), &mut entries);
         let entries_reader = Arc::new(RwLock::new(entries));
         let entries_writer = entries_reader.clone();
         spawn(move || {
-            let default = SystemTime::UNIX_EPOCH;
-            let mut lastmtime = metadata(path).and_then(|m| m.modified()).unwrap_or(default);
+            let mut lastmtime = metadata(path).and_then(|m| m.modified()).unwrap_or(UNIX_EPOCH);
             loop {
                 sleep(Duration::from_secs(4));
-                let mtime = metadata(path).and_then(|m| m.modified()).unwrap_or(default);
+                let mtime = metadata(path).and_then(|m| m.modified()).unwrap_or(UNIX_EPOCH);
                 if mtime == lastmtime { continue }
                 lastmtime = mtime;
                 let mut entries = entries_writer.write().unwrap();
                 entries.clear();
-                Htpasswd::parse(&read_to_string(path).unwrap_or_default(), &mut entries);
+                Self::parse(&read_to_string(path).unwrap_or_default(), &mut entries);
             }
         });
         Htpasswd { entries: entries_reader }
