@@ -593,7 +593,10 @@ fn main() -> IoResult<()> {
                                             match copy(&mut downstream_reader, &mut upstream_writer) {
                                                 Err(IoErr::I(e)) => {
                                                     if verbosity >= 2 { eprintln!("Error while reading packets from downstream: {}", remote_addr) }
-                                                    if verbosity >= 3 { eprintln!("  {:?}", e) }
+                                                    if verbosity >= 2 { eprintln!("  {:?}", e) }
+                                                }
+                                                Err(IoErr::O(e)) if e.kind() == ErrorKind::BrokenPipe => {
+                                                    if verbosity >= 3 { eprintln!("Broken pipe to upstream: {}", writing_target) }
                                                 }
                                                 Err(IoErr::O(e)) => {
                                                     if verbosity >= 1 { eprintln!("Error while writing packets to upstream: {}", writing_target) }
@@ -606,7 +609,7 @@ fn main() -> IoResult<()> {
                                         let download = spawn(move || {
                                             match copy(&mut upstream_reader, &mut downstream_writer) {
                                                 Err(IoErr::I(e)) if e.kind() == ErrorKind::ConnectionReset => {
-                                                    if verbosity >= 2 { eprintln!("Connection reset from upstream: {}", reading_target) }
+                                                    if verbosity >= 3 { eprintln!("Connection reset from upstream: {}", reading_target) }
                                                 }
                                                 Err(IoErr::I(e)) => {
                                                     if verbosity >= 1 { eprintln!("Error while reading packets from upstream: {}", reading_target) }
@@ -614,7 +617,7 @@ fn main() -> IoResult<()> {
                                                 }
                                                 Err(IoErr::O(e)) => {
                                                     if verbosity >= 2 { eprintln!("Error while writing packets to downstream: {}", remote_addr) }
-                                                    if verbosity >= 3 { eprintln!("  {:?}", e) }
+                                                    if verbosity >= 2 { eprintln!("  {:?}", e) }
                                                 }
                                                 _ => {}
                                             }
@@ -694,7 +697,7 @@ fn main() -> IoResult<()> {
                                                 match copy_body(&headers, &mut request_reader, &mut upstream) {
                                                     Err(IoErr::I(e)) => {
                                                         if verbosity >= 2 { eprintln!("Error while reading body from downstream: {}", remote_addr) }
-                                                        if verbosity >= 3 { eprintln!("  {:?}", e) }
+                                                        if verbosity >= 2 { eprintln!("  {:?}", e) }
                                                         return if verbosity >= 1 { log(499, Some(0)) }
                                                     }
                                                     Err(IoErr::O(e)) => {
@@ -726,7 +729,7 @@ fn main() -> IoResult<()> {
                                                 headers.write_response(&protocol, status, &phrase, &mut buf).unwrap();
                                                 if let Err(e) = downstream.write_all(&buf) {
                                                     if verbosity >= 2 { eprintln!("Error while writing headers to downstream: {}", remote_addr) }
-                                                    if verbosity >= 3 { eprintln!("  {:?}", e) }
+                                                    if verbosity >= 2 { eprintln!("  {:?}", e) }
                                                     return if verbosity >= 1 { log(499, Some(0)) }
                                                 }
                                                 if method == "HEAD" || !is_websocket_response && status < 200 || status == 204 || status == 304 {
@@ -743,7 +746,7 @@ fn main() -> IoResult<()> {
                                                         }
                                                         Err(IoErr::O(e)) => {
                                                             if verbosity >= 2 { eprintln!("Error while writing body to downstream: {}", remote_addr) }
-                                                            if verbosity >= 3 { eprintln!("  {:?}", e) }
+                                                            if verbosity >= 2 { eprintln!("  {:?}", e) }
                                                             return if verbosity >= 1 { log(499, None) }
                                                         }
                                                     }
@@ -759,7 +762,7 @@ fn main() -> IoResult<()> {
                                                         match copy_websocket_frames(&mut downstream_reader, &mut upstream_writer) {
                                                             Err(IoErr::I(e)) => {
                                                                 if verbosity >= 2 { eprintln!("Error while reading frames from downstream: {}", remote_addr) }
-                                                                if verbosity >= 3 { eprintln!("  {:?}", e) }
+                                                                if verbosity >= 2 { eprintln!("  {:?}", e) }
                                                             }
                                                             Err(IoErr::O(e)) => {
                                                                 if verbosity >= 1 { eprintln!("Error while writing frames to upstream: {}", writing_host) }
@@ -777,7 +780,7 @@ fn main() -> IoResult<()> {
                                                             }
                                                             Err(IoErr::O(e)) => {
                                                                 if verbosity >= 2 { eprintln!("Error while writing frames to downstream: {}", remote_addr) }
-                                                                if verbosity >= 3 { eprintln!("  {:?}", e) }
+                                                                if verbosity >= 2 { eprintln!("  {:?}", e) }
                                                             }
                                                             _ => {}
                                                         }
@@ -809,7 +812,7 @@ fn main() -> IoResult<()> {
                         }
                         Err(e) => {
                             if verbosity >= 2 { eprintln!("Error while reading headers from downstream: {}", remote_addr) }
-                            if verbosity >= 3 { eprintln!("  {:?}", e) }
+                            if verbosity >= 2 { eprintln!("  {:?}", e) }
                         }
                     }
                 });
