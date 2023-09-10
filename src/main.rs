@@ -312,32 +312,6 @@ fn copy_body<R: BufRead, W: Write>(headers: &Headers, reader: &mut R, writer: &m
     }
 }
 
-#[allow(dead_code)]
-fn copy_websocket_frames<R: Read, W: Write>(reader: &mut R, writer: &mut W) -> Result<(), IoErr> {
-    loop {
-        let mut buf = [0; 2];
-        if let Err(e) = reader.read_exact(&mut buf) { return Err(IoErr::I(e)) }
-        if let Err(e) = writer.write_all(&buf) { return Err(IoErr::O(e)) }
-        let opcode = buf[0] & 0x0F;
-        let masked = (buf[1] & 0x80) != 0;
-        let mut length = (buf[1] & 0x7F) as u64;
-        if length == 126 {
-            if let Err(e) = reader.read_exact(&mut buf) { return Err(IoErr::I(e)) }
-            if let Err(e) = writer.write_all(&buf) { return Err(IoErr::O(e)) }
-            length = u16::from_be_bytes(buf) as u64;
-        }
-        if length == 127 {
-            let mut buf = [0; 8];
-            if let Err(e) = reader.read_exact(&mut buf) { return  Err(IoErr::I(e)) }
-            if let Err(e) = writer.write_all(&buf) { return Err(IoErr::O(e)) }
-            length = u64::from_be_bytes(buf);
-        }
-        if masked { copy_exact(reader, writer, 4)? }
-        copy_exact(reader, writer, length)?;
-        if opcode == 8 { return Ok(()) }
-    }
-}
-
 #[derive(Clone)]
 struct Resolver {
     cache: Arc<RwLock<HashMap<String, (IpAddr, SystemTime)>>>,
