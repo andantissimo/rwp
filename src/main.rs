@@ -77,7 +77,7 @@ impl Headers {
         let mut i = line.splitn(3, ' ');
         if let (Some(protocol), Some(status), phrase) = (i.next(), i.next(), i.next()) {
             if let Ok(status) = status.parse() {
-                if 200 <= status && status < 600 {
+                if 100 <= status && status < 600 {
                     return Ok((protocol.into(), status, phrase.unwrap_or_default().into()))
                 }
             }
@@ -312,6 +312,7 @@ fn copy_body<R: BufRead, W: Write>(headers: &Headers, reader: &mut R, writer: &m
     }
 }
 
+#[allow(dead_code)]
 fn copy_websocket_frames<R: Read, W: Write>(reader: &mut R, writer: &mut W) -> Result<(), IoErr> {
     loop {
         let mut buf = [0; 2];
@@ -671,15 +672,6 @@ fn main() -> IoResult<()> {
                                         }
                                     }
                                 };
-                                let is_websocket_request = method == "GET"
-                                    && headers.contains("Connection", "upgrade")
-                                    && headers.contains("Upgrade", "websocket")
-                                    && headers.contains("Sec-WebSocket-Version", "13");
-                                if headers.contains("Sec-WebSocket-Extensions", "permessage-deflate") {
-                                    if verbosity >= 1 { eprintln!("Unsupported WebSocket extension: {}", "permessage-deflate") }
-                                    if verbosity >= 1 { log(501, Some(0)) }
-                                    return downstream.write_all(NOT_IMPLEMENTED).unwrap_or_default()
-                                }
                                 headers.retain(|name, _| !name.to_ascii_lowercase().starts_with("proxy-"));
                                 match TcpStream::connect((addr, port)) {
                                     Ok(mut upstream) => {
@@ -713,13 +705,7 @@ fn main() -> IoResult<()> {
                                         let mut response_reader = BufReader::new(&mut upstream);
                                         match Headers::read_response(&mut response_reader) {
                                             Ok((protocol, status, phrase, mut headers)) => {
-                                                let is_upgradable = headers.contains("Connection", "upgrade")
-                                                    && headers.get_content_length().unwrap_or_default() == 0
-                                                    && !headers.contains("Transfer-Encoding", "chunked");
-                                                let is_websocket_response = status == 101
-                                                    && headers.contains("Connection", "upgrade")
-                                                    && headers.contains("Upgrade", "websocket");
-                                                if status < 200 && !(is_upgradable && is_websocket_request && is_websocket_response) {
+                                                if status < 200 {
                                                     if verbosity >= 1 { eprintln!("Unsupported status: {}", status) }
                                                     if verbosity >= 1 { log(501, Some(0)) }
                                                     return downstream.write_all(NOT_IMPLEMENTED).unwrap_or_default()
@@ -732,61 +718,23 @@ fn main() -> IoResult<()> {
                                                     if verbosity >= 2 { eprintln!("  {:?}", e) }
                                                     return if verbosity >= 1 { log(499, Some(0)) }
                                                 }
-                                                if method == "HEAD" || !is_websocket_response && status < 200 || status == 204 || status == 304 {
-                                                    if verbosity >= 1 { log(status, Some(0)) }
-                                                } else {
-                                                    match copy_body(&headers, &mut response_reader, &mut downstream) {
-                                                        Ok(sent) => {
-                                                            if verbosity >= 1 { log(status, Some(sent)) }
-                                                        }
-                                                        Err(IoErr::I(e)) => {
-                                                            if verbosity >= 1 { eprintln!("Error while reading body from upstream: {}", host) }
-                                                            if verbosity >= 2 { eprintln!("  {:?}", e) }
-                                                            return if verbosity >= 1 { log(444, None) }
-                                                        }
-                                                        Err(IoErr::O(e)) => {
-                                                            if verbosity >= 2 { eprintln!("Error while writing body to downstream: {}", remote_addr) }
-                                                            if verbosity >= 2 { eprintln!("  {:?}", e) }
-                                                            return if verbosity >= 1 { log(499, None) }
-                                                        }
-                                                    }
+                                                if method == "HEAD" || status == 204 || status == 304 {
+                                                    return if verbosity >= 1 { log(status, Some(0)) }
                                                 }
-                                                if is_websocket_response {
-                                                    if verbosity >= 1 { log(status, None) }
-                                                    let mut downstream_reader = downstream.try_clone().unwrap();
-                                                    let mut downstream_writer = downstream.try_clone().unwrap();
-                                                    let mut upstream_reader = upstream.try_clone().unwrap();
-                                                    let mut upstream_writer = upstream.try_clone().unwrap();
-                                                    let writing_host = host.to_string();
-                                                    let upload = spawn(move || {
-                                                        match copy_websocket_frames(&mut downstream_reader, &mut upstream_writer) {
-                                                            Err(IoErr::I(e)) => {
-                                                                if verbosity >= 2 { eprintln!("Error while reading frames from downstream: {}", remote_addr) }
-                                                                if verbosity >= 2 { eprintln!("  {:?}", e) }
-                                                            }
-                                                            Err(IoErr::O(e)) => {
-                                                                if verbosity >= 1 { eprintln!("Error while writing frames to upstream: {}", writing_host) }
-                                                                if verbosity >= 2 { eprintln!("  {:?}", e) }
-                                                            }
-                                                            _ => {}
-                                                        }
-                                                    });
-                                                    let reading_host = host.to_string();
-                                                    let download = spawn(move || {
-                                                        match copy_websocket_frames(&mut upstream_reader, &mut downstream_writer) {
-                                                            Err(IoErr::I(e)) => {
-                                                                if verbosity >= 1 { eprintln!("Error while reading frames from upstream: {}", reading_host) }
-                                                                if verbosity >= 2 { eprintln!("  {:?}", e) }
-                                                            }
-                                                            Err(IoErr::O(e)) => {
-                                                                if verbosity >= 2 { eprintln!("Error while writing frames to downstream: {}", remote_addr) }
-                                                                if verbosity >= 2 { eprintln!("  {:?}", e) }
-                                                            }
-                                                            _ => {}
-                                                        }
-                                                    });
-                                                    upload.join().unwrap_or_default();
-                                                    download.join().unwrap_or_default();
+                                                match copy_body(&headers, &mut response_reader, &mut downstream) {
+                                                    Ok(sent) => {
+                                                        return if verbosity >= 1 { log(status, Some(sent)) }
+                                                    }
+                                                    Err(IoErr::I(e)) => {
+                                                        if verbosity >= 1 { eprintln!("Error while reading body from upstream: {}", host) }
+                                                        if verbosity >= 2 { eprintln!("  {:?}", e) }
+                                                        return if verbosity >= 1 { log(444, None) }
+                                                    }
+                                                    Err(IoErr::O(e)) => {
+                                                        if verbosity >= 2 { eprintln!("Error while writing body to downstream: {}", remote_addr) }
+                                                        if verbosity >= 2 { eprintln!("  {:?}", e) }
+                                                        return if verbosity >= 1 { log(499, None) }
+                                                    }
                                                 }
                                             }
                                             Err(e) => {
