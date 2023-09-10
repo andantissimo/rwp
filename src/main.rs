@@ -566,6 +566,9 @@ fn main() -> IoResult<()> {
                                         let writing_target = target.clone();
                                         let upload = spawn(move || {
                                             match copy(&mut downstream_reader, &mut upstream_writer) {
+                                                Err(IoErr::I(e)) if e.kind() == ErrorKind::ConnectionReset => {
+                                                    if verbosity >= 3 { eprintln!("Connection reset from downstream: {}", remote_addr) }
+                                                }
                                                 Err(IoErr::I(e)) => {
                                                     if verbosity >= 2 { eprintln!("Error while reading packets from downstream: {}", remote_addr) }
                                                     if verbosity >= 2 { eprintln!("  {:?}", e) }
@@ -589,6 +592,9 @@ fn main() -> IoResult<()> {
                                                 Err(IoErr::I(e)) => {
                                                     if verbosity >= 1 { eprintln!("Error while reading packets from upstream: {}", reading_target) }
                                                     if verbosity >= 2 { eprintln!("  {:?}", e) }
+                                                }
+                                                Err(IoErr::O(e)) if e.kind() == ErrorKind::BrokenPipe => {
+                                                    if verbosity >= 3 { eprintln!("Broken pipe to downstream: {}", remote_addr) }
                                                 }
                                                 Err(IoErr::O(e)) => {
                                                     if verbosity >= 2 { eprintln!("Error while writing packets to downstream: {}", remote_addr) }
