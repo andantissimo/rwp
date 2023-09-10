@@ -51,82 +51,90 @@ struct Headers {
 }
 
 impl Headers {
-    fn ensure_line_ending(buf: &[u8]) -> IoResult<()> {
-        Ok(if !buf.ends_with(&['\r' as u8, '\n' as u8]) {
+    fn decode(buf: &[u8]) -> String {
+        String::from_iter(buf.iter().map(|x| *x as char))
+    }
+
+    fn encode<W: Write>(s: &str, writer: &mut W) -> IoResult<()> {
+        assert!(s.chars().all(|c| c <= '\u{FF}'));
+        Ok(for c in s.chars() { writer.write_all(&[c as u8])? })
+    }
+
+    fn read_line<R: BufRead>(reader: &mut R, buf: &mut Vec<u8>) -> IoResult<usize> {
+        let len = reader.read_until(b'\n', buf)?;
+        if len == 0 { return Err(ErrorKind::UnexpectedEof.into()) }
+        if !buf.ends_with(b"\r\n") {
             return Err(IoError::new(ErrorKind::InvalidData, "invalid line ending"))
-        })
-    }
-
-    fn read_request_line<R: BufRead>(reader: &mut R) -> IoResult<(String, String, String)> {
-        let mut buf: Vec<u8> = Vec::new();
-        let n = reader.read_until('\n' as u8, &mut buf)?;
-        Self::ensure_line_ending(&buf)?;
-        let line = String::from_iter(buf[..n-2].iter().map(|c| *c as char));
-        let mut i = line.splitn(3, ' ');
-        if let (Some(method), Some(target), Some(protocol)) = (i.next(), i.next(), i.next()) {
-            return Ok((method.into(), target.into(), protocol.into()))
         }
-        Err(IoError::new(ErrorKind::InvalidData, "invalid request line"))
+        Ok(len - 2)
     }
 
-    fn read_status_line<R: BufRead>(reader: &mut R) -> IoResult<(String, u16, String)> {
-        let mut buf: Vec<u8> = Vec::new();
-        let n = reader.read_until('\n' as u8, &mut buf)?;
-        Self::ensure_line_ending(&buf)?;
-        let line = String::from_iter(buf[..n-2].iter().map(|c| *c as char));
-        let mut i = line.splitn(3, ' ');
-        if let (Some(protocol), Some(status), phrase) = (i.next(), i.next(), i.next()) {
-            if let Ok(status) = status.parse() {
-                if 100 <= status && status < 600 {
-                    return Ok((protocol.into(), status, phrase.unwrap_or_default().into()))
-                }
-            }
+    fn read_request_line<R: BufRead>(reader: &mut R, buf: &mut Vec<u8>) -> IoResult<(String, String, String)> {
+        let len = Self::read_line(reader, buf)?;
+        let mut i = buf[..len].splitn(3, |c| *c == b' ');
+        match (i.next(), i.next(), i.next()) {
+            (Some(method), Some(target), Some(protocol)) =>
+                Ok((Self::decode(method), Self::decode(target), Self::decode(protocol))),
+            _ => Err(IoError::new(ErrorKind::InvalidData, "invalid request line"))
         }
-        Err(IoError::new(ErrorKind::InvalidData, "invalid status line"))
     }
 
-    fn read<R: BufRead>(reader: &mut R) -> IoResult<Headers> {
+    fn read_status_line<R: BufRead>(reader: &mut R, buf: &mut Vec<u8>) -> IoResult<(String, u16, String)> {
+        let len = Self::read_line(reader, buf)?;
+        let mut i = buf[..len].splitn(3, |c| *c == b' ');
+        match (i.next(), i.next().and_then(|s| Self::decode(s).parse().ok()), i.next().unwrap_or_default()) {
+            (Some(protocol), Some(status), phrase) if 100 <= status && status < 600 =>
+                Ok((Self::decode(protocol), status, Self::decode(phrase))),
+            _ => Err(IoError::new(ErrorKind::InvalidData, "invalid status line"))
+        }
+    }
+
+    fn read<R: BufRead>(reader: &mut R, buf: &mut Vec<u8>) -> IoResult<Headers> {
         let mut entries = Vec::new();
-        let mut buf: Vec<u8> = Vec::new();
         loop {
             buf.clear();
-            let n = reader.read_until('\n' as u8, &mut buf)?;
-            Self::ensure_line_ending(&buf)?;
-            if n == 2 { return Ok(Headers { entries }) }
-            let line = String::from_iter(buf[..n-2].iter().map(|c| *c as char));
-            if let Some((name, value)) = line.split_once(':') {
-                entries.push((name.into(), value.trim().into()));
+            let len = Self::read_line(reader, buf)?;
+            if len == 0 { return Ok(Headers { entries }) }
+            let line = &buf[..len];
+            let mut i = line.splitn(2, |c| *c == b':');
+            if let (Some(name), Some(value)) = (i.next(), i.next()) {
+                let spaces = value.iter().filter(|c| (**c as char).is_ascii_whitespace()).count();
+                entries.push((Self::decode(name), Self::decode(&value[spaces..])));
             }
         }
     }
 
     fn read_request<R: BufRead>(reader: &mut R) -> IoResult<(String, String, String, Headers)> {
-        let (method, target, protocol) = Self::read_request_line(reader)?;
-        let headers = Self::read(reader)?;
+        let mut buf = Vec::with_capacity(8192);
+        let (method, target, protocol) = Self::read_request_line(reader, &mut buf)?;
+        let headers = Self::read(reader, &mut buf)?;
         Ok((method, target, protocol, headers))
     }
 
     fn read_response<R: BufRead>(reader: &mut R) -> IoResult<(String, u16, String, Headers)> {
-        let (protocol, status, phrase) = Self::read_status_line(reader)?;
-        let headers = Self::read(reader)?;
+        let mut buf = Vec::with_capacity(8192);
+        let (protocol, status, phrase) = Self::read_status_line(reader, &mut buf)?;
+        let headers = Self::read(reader, &mut buf)?;
         Ok((protocol, status, phrase, headers))
     }
 
     fn write_request_line<W: Write>(method: &str, target: &str, protocol: &str, writer: &mut W) -> IoResult<()> {
-        let mut buf = Vec::with_capacity(method.len() + 1 + target.len() + 1 + protocol.len() + 2);
-        buf.extend(method.chars().map(|c| c as u8).chain([' ' as u8]));
-        buf.extend(target.chars().map(|c| c as u8).chain([' ' as u8]));
-        buf.extend(protocol.chars().map(|c| c as u8).chain(['\r' as u8, '\n' as u8]));
-        writer.write_all(&buf)
+        Self::encode(method, writer)?;
+        writer.write_all(b" ")?;
+        Self::encode(target, writer)?;
+        writer.write_all(b" ")?;
+        Self::encode(protocol, writer)?;
+        writer.write_all(b"\r\n")
     }
 
     fn write_status_line<W: Write>(protocol: &str, status: u16, phrase: &str, writer: &mut W) -> IoResult<()> {
         assert!(100 <= status && status < 600);
-        let mut buf = Vec::with_capacity(protocol.len() + 1 + 3 + 1 + phrase.len() + 2);
-        buf.extend(protocol.chars().map(|c| c as u8).chain([' ' as u8]));
-        buf.extend(status.to_string().chars().map(|c| c as u8).chain([' ' as u8]));
-        buf.extend(phrase.chars().map(|c| c as u8).chain(['\r' as u8, '\n' as u8]));
-        writer.write_all(&buf)
+        Self::encode(protocol, writer)?;
+        writer.write_all(b" ")?;
+        Self::encode(&status.to_string(), writer)?;
+        writer.write_all(b" ")?;
+        Self::encode(phrase, writer)?;
+        writer.write_all(b"\r\n")
     }
 
     fn get(&self, name: &str) -> Vec<&str> {
@@ -164,23 +172,28 @@ impl Headers {
     }
 
     fn write<W: Write>(&self, writer: &mut W) -> IoResult<()> {
-        let mut buf = Vec::new();
-        for (name, value) in self.entries.iter().filter(|(_, v)| !v.is_empty()) {
-            buf.extend(name.chars().map(|c| c as u8).chain([':' as u8, ' ' as u8]));
-            buf.extend(value.chars().map(|c| c as u8).chain(['\r' as u8, '\n' as u8]));
-        }
-        buf.extend(['\r' as u8, '\n' as u8]);
-        writer.write_all(&buf)
+        Ok(for (name, value) in self.entries.iter().filter(|(_, v)| !v.is_empty()) {
+            Self::encode(name, writer)?;
+            writer.write_all(b": ")?;
+            Self::encode(value, writer)?;
+            writer.write_all(b"\r\n")?
+        })
     }
 
     fn write_request<W: Write>(&self, method: &str, target: &str, protocol: &str, writer: &mut W) -> IoResult<()> {
-        Self::write_request_line(method, target, protocol, writer)?;
-        self.write(writer)
+        let mut buf = Vec::new();
+        Self::write_request_line(method, target, protocol, &mut buf)?;
+        self.write(&mut buf)?;
+        buf.write_all(b"\r\n")?;
+        writer.write_all(&buf)
     }
 
     fn write_response<W: Write>(&self, protocol: &str, status: u16, phrase: &str, writer: &mut W) -> IoResult<()> {
-        Self::write_status_line(protocol, status, phrase, writer)?;
-        self.write(writer)
+        let mut buf = Vec::new();
+        Self::write_status_line(protocol, status, phrase, &mut buf)?;
+        self.write(&mut buf)?;
+        buf.write_all(b"\r\n")?;
+        writer.write_all(&buf)
     }
 }
 
@@ -213,18 +226,16 @@ fn is_hostname(hostname: &str) -> bool {
 }
 
 fn parse_uri(uri: &str) -> Option<(&str, &str, &str)> {
-    if let Some((scheme, host_path_query)) = uri.split_once("://") {
-        if let Some(slash) = host_path_query.find('/') {
-            let (host, path_query) = (&host_path_query[..slash], &host_path_query[slash..]);
-            return Some((scheme, host, path_query))
-        }
-    }
-    None
+    uri.split_once("://").and_then(|(scheme, host_path_query)| {
+        host_path_query.find('/').and_then(|slash| {
+            Some((scheme, &host_path_query[..slash], &host_path_query[slash..]))
+        })
+    })
 }
 
 fn parse_host(host: &str) -> (&str, Option<u16>) {
     if let Some((hostname, port)) = host.rsplit_once(':') {
-        if let Ok(port) = port.parse() {
+        if let Ok(port) = u16::from_str_radix(port, 10) {
             return (hostname, Some(port))
         }
     }
@@ -250,18 +261,18 @@ fn copy<R: Read, W: Write>(reader: &mut R, writer: &mut W) -> Result<u64, IoErr>
                 if let Err(e) = writer.write_all(&buf[..n]) { return Err(IoErr::O(e)) }
                 len += n as u64;
             }
-            Err(e) => { return Err(IoErr::I(e)) }
+            Err(e) => return Err(IoErr::I(e))
         }
     }
 }
 
-fn copy_exact<R: Read, W: Write>(reader: &mut R, writer: &mut W, mut length: u64) -> Result<(), IoErr> {
+fn copy_exact<R: Read, W: Write>(reader: &mut R, writer: &mut W, mut len: u64) -> Result<(), IoErr> {
     let mut buf = [0; 8192];
-    Ok(while length > 0 {
-        let n = length.min(buf.len() as u64) as usize;
+    Ok(while len > 0 {
+        let n = len.min(buf.len() as u64) as usize;
         if let Err(e) = reader.read_exact(&mut buf[..n]) { return Err(IoErr::I(e)) }
         if let Err(e) = writer.write_all(&buf[..n]) { return Err(IoErr::O(e)) }
-        length -= n as u64;
+        len -= n as u64;
     })
 }
 
@@ -270,9 +281,9 @@ fn copy_chunked<R: BufRead, W: Write>(reader: &mut R, writer: &mut W) -> Result<
     let mut len: u64 = 0;
     loop {
         buf.clear();
-        match reader.read_until('\n' as u8, &mut buf) {
+        match reader.read_until(b'\n', &mut buf) {
             Ok(n) => {
-                if let Err(e) = Headers::ensure_line_ending(&buf) { return Err(IoErr::I(e)) }
+                if !buf.ends_with(b"\r\n") { return Err(IoErr::I(ErrorKind::InvalidData.into())) }
                 if let Err(e) = writer.write_all(&buf[..n]) { return Err(IoErr::O(e)) }
                 len += n as u64;
                 let hex = String::from_iter(buf[..n-2].iter().map(|c| *c as char));
@@ -281,7 +292,7 @@ fn copy_chunked<R: BufRead, W: Write>(reader: &mut R, writer: &mut W) -> Result<
                     buf.resize(n, 0);
                     match reader.read_exact(&mut buf) {
                         Ok(_) => {
-                            if let Err(e) = Headers::ensure_line_ending(&buf) { return Err(IoErr::I(e)) }
+                            if !buf.ends_with(b"\r\n") { return Err(IoErr::I(ErrorKind::InvalidData.into())) }
                             if let Err(e) = writer.write_all(&buf[..n]) { return Err(IoErr::O(e)) }
                         }
                         Err(e) => {
@@ -291,8 +302,7 @@ fn copy_chunked<R: BufRead, W: Write>(reader: &mut R, writer: &mut W) -> Result<
                     len += n as u64;
                     if n == 2 { return Ok(len) }
                 } else {
-                    let e = IoError::new(ErrorKind::InvalidData, "invalid chunk length");
-                    return Err(IoErr::I(e))
+                    return Err(IoErr::I(ErrorKind::InvalidData.into()))
                 }
             }
             Err(e) => {
@@ -303,8 +313,8 @@ fn copy_chunked<R: BufRead, W: Write>(reader: &mut R, writer: &mut W) -> Result<
 }
 
 fn copy_body<R: BufRead, W: Write>(headers: &Headers, reader: &mut R, writer: &mut W) -> Result<u64, IoErr> {
-    if let Some(length) = headers.get_content_length() {
-        match copy_exact(reader, writer, length) { Ok(_) => Ok(length), Err(e) => Err(e) }
+    if let Some(len) = headers.get_content_length() {
+        match copy_exact(reader, writer, len) { Ok(_) => Ok(len), Err(e) => Err(e) }
     } else if headers.contains("Transfer-Encoding", "chunked") {
         copy_chunked(reader, writer)
     } else {
@@ -655,9 +665,7 @@ fn main() -> IoResult<()> {
                                 headers.retain(|name, _| !name.to_ascii_lowercase().starts_with("proxy-"));
                                 match TcpStream::connect((addr, port)) {
                                     Ok(mut upstream) => {
-                                        let mut buf = Vec::new();
-                                        headers.write_request(&method, &target, &protocol, &mut buf).unwrap();
-                                        if let Err(e) = upstream.write_all(&buf) {
+                                        if let Err(e) = headers.write_request(&method, &target, &protocol, &mut upstream) {
                                             if verbosity >= 1 { eprintln!("Error while writing headers to upstream: {}", host) }
                                             if verbosity >= 2 { eprintln!("  {:?}", e) }
                                             if verbosity >= 1 { log(502, Some(0)) }
@@ -691,9 +699,7 @@ fn main() -> IoResult<()> {
                                                     return downstream.write_all(NOT_IMPLEMENTED).unwrap_or_default()
                                                 }
                                                 headers.push("Proxy-Connection", "close");
-                                                let mut buf = Vec::new();
-                                                headers.write_response(&protocol, status, &phrase, &mut buf).unwrap();
-                                                if let Err(e) = downstream.write_all(&buf) {
+                                                if let Err(e) = headers.write_response(&protocol, status, &phrase, &mut downstream) {
                                                     if verbosity >= 2 { eprintln!("Error while writing headers to downstream: {}", remote_addr) }
                                                     if verbosity >= 2 { eprintln!("  {:?}", e) }
                                                     return if verbosity >= 1 { log(499, Some(0)) }
