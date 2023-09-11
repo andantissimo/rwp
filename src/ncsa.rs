@@ -49,10 +49,10 @@ pub struct Htpasswd {
 }
 
 impl Htpasswd {
-    pub fn new() -> Htpasswd {
+    pub fn new() -> Self {
         let path = ".htpasswd";
         let mut entries = HashMap::new();
-        Self::parse(&read_to_string(path).unwrap_or_default(), &mut entries);
+        if let Ok(data) = read_to_string(path) { Self::parse(&data, &mut entries) }
         let entries_reader = Arc::new(RwLock::new(entries));
         let entries_writer = entries_reader.clone();
         spawn(move || {
@@ -64,10 +64,10 @@ impl Htpasswd {
                 lastmtime = mtime;
                 let mut entries = entries_writer.write().unwrap();
                 entries.clear();
-                Self::parse(&read_to_string(path).unwrap_or_default(), &mut entries);
+                if let Ok(data) = read_to_string(path) { Self::parse(&data, &mut entries) }
             }
         });
-        Htpasswd { entries: entries_reader }
+        Self { entries: entries_reader }
     }
 
     fn parse(data: &str, entries: &mut HashMap<String, (String, String)>) {
@@ -83,7 +83,7 @@ impl Htpasswd {
     }
 
     pub fn contains(&self, username: &str, password: &str) -> bool {
-        if let Some((salt, hash)) = self.entries.read().unwrap().get(username) {
+        self.entries.read().unwrap().get(username).is_some_and(|(salt, hash)| {
             let (key, apr1, salt) = (password.as_bytes(), b"$apr1$", salt.as_bytes());
             unsafe {
                 let md5 = EVP_MD_CTX_new();
@@ -161,30 +161,26 @@ impl Htpasswd {
                 p = to64(p, (fin[4] as usize) << 16 | (fin[10] as usize) << 8 | fin[ 5] as usize, 4);
                 _ = to64(p, fin[11] as usize, 2);
 
-                return encrypted.eq(hash.as_bytes())
+                encrypted.eq(hash.as_bytes())
             }
-        }
-        false
+        })
     }
 
     pub fn authorize(&self, value: &str) -> bool {
-        if let Some((scheme, data)) = value.split_once(' ') {
+        value.split_once(' ').is_some_and(|(scheme, data)| {
             if !scheme.eq_ignore_ascii_case("Basic") { return false }
             let data = data.as_bytes();
             let mut t = Vec::new();
             t.resize((data.len() + 2) * 3 / 4, 0);
-            unsafe {
-                let n = EVP_DecodeBlock(t.as_mut_ptr(), data.as_ptr(), data.len() as c_int);
-                if n < 0 { return false }
-                t.resize(n as usize, 0);
-                if let Ok(credentials) = String::from_utf8(t) {
-                    if let Some((username, password)) = credentials.split_once(':') {
-                        return self.contains(username, password)
-                    }
-                }
-            }
-        }
-        false
+            let n = unsafe { EVP_DecodeBlock(t.as_mut_ptr(), data.as_ptr(), data.len() as c_int) };
+            if n < 0 { return false }
+            t.resize(n as usize, 0);
+            String::from_utf8(t).is_ok_and(|credentials| {
+                credentials.split_once(':').is_some_and(|(username, password)| {
+                    self.contains(username, password)
+                })
+            })
+        })
     }
 
     pub fn is_empty(&self) -> bool {
