@@ -98,7 +98,7 @@ impl Headers {
             let line = &buf[..len];
             let mut i = line.splitn(2, |c| *c == b':');
             if let (Some(name), Some(value)) = (i.next(), i.next()) {
-                let spaces = value.iter().filter(|c| (**c as char).is_ascii_whitespace()).count();
+                let spaces = value.iter().take_while(|c| (**c as char).is_ascii_whitespace()).count();
                 entries.push((Self::decode(name), Self::decode(&value[spaces..])));
             }
         }
