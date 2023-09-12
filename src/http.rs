@@ -3,12 +3,12 @@ use std::fmt::{Display, Formatter, Result as FmtResult};
 use std::io::{BufRead, Error as IoError, ErrorKind as IoErrorKind, Result as IoResult, Write};
 use std::net::{AddrParseError, IpAddr, Ipv4Addr, Ipv6Addr};
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Headers {
     entries: Vec<(Cow<'static, str>, Cow<'static, str>)>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Request {
     pub method: String,
     pub target: String,
@@ -16,7 +16,7 @@ pub struct Request {
     pub headers: Headers,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Response {
     pub protocol: String,
     pub status: u16,
@@ -24,13 +24,13 @@ pub struct Response {
     pub headers: Headers,
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Host {
     pub name: String,
     pub port: Option<u16>,
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Uri {
     pub scheme: String,
     pub host: Host,
@@ -261,5 +261,100 @@ impl Uri {
                 Some(Self { scheme: scheme.into(), host: Host::parse(host), path_and_query: path_and_query.into() })
             })
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn test_request() {
+        let mut cur = Cursor::new(b"\
+            GET / HTTP/1.1\r\n\
+            Connection: close\r\n\
+            \r\n");
+        let req = Request::read(&mut cur);
+        assert!(req.is_ok());
+        let req = req.unwrap();
+        assert!(req.is_some());
+        let req = req.unwrap();
+        assert_eq!(req.method, "GET");
+        assert_eq!(req.target, "/");
+        assert_eq!(req.protocol, "HTTP/1.1");
+        assert_eq!(req.headers.get_once("Connection"), Some("close"));
+        let mut buf = Vec::new();
+        assert!(req.write(&mut buf).is_ok());
+        assert_eq!(buf, b"\
+            GET / HTTP/1.1\r\n\
+            Connection: close\r\n\
+            \r\n");
+
+        let mut cur = Cursor::new(b"");
+        let req = Request::read(&mut cur);
+        assert!(req.is_ok_and(|r| r.is_none()));
+
+        let mut cur = Cursor::new(b"Invalid data\r\n");
+        let req = Request::read(&mut cur);
+        assert!(req.is_err_and(|e| e.kind() == IoErrorKind::InvalidData));
+
+        let mut cur = Cursor::new(b"Unexpected EOF .\r\n");
+        let req = Request::read(&mut cur);
+        assert!(req.is_err_and(|e| e.kind() == IoErrorKind::UnexpectedEof));
+    }
+
+    #[test]
+    fn test_response() {
+        let mut cur = Cursor::new(b"\
+            HTTP/1.1 200 OK\r\n\
+            Connection: close\r\n\
+            \r\n");
+        let res = Response::read(&mut cur);
+        assert!(res.is_ok());
+        let res = res.unwrap();
+        assert_eq!(res.protocol, "HTTP/1.1");
+        assert_eq!(res.status, 200);
+        assert_eq!(res.phrase, "OK");
+        assert_eq!(res.headers.get_once("Connection"), Some("close"));
+        let mut buf = Vec::new();
+        assert!(res.write(&mut buf).is_ok());
+        assert_eq!(buf, b"\
+            HTTP/1.1 200 OK\r\n\
+            Connection: close\r\n\
+            \r\n");
+
+        let mut cur = Cursor::new(b"");
+        let res = Response::read(&mut cur);
+        assert!(res.is_err_and(|e| e.kind() == IoErrorKind::UnexpectedEof));
+
+        let mut cur = Cursor::new(b"Invalid data\r\n");
+        let res = Response::read(&mut cur);
+        assert!(res.is_err_and(|e| e.kind() == IoErrorKind::InvalidData));
+
+        let mut cur = Cursor::new(b"Unexpected 500 EOF\r\n");
+        let res = Response::read(&mut cur);
+        assert!(res.is_err_and(|e| e.kind() == IoErrorKind::UnexpectedEof));
+    }
+
+    #[test]
+    fn test_uri() {
+        let uri = Uri::parse("http://localhost/");
+        assert!(uri.is_some());
+        let uri = uri.unwrap();
+        assert_eq!(uri.scheme, "http");
+        assert_eq!(uri.host.name, "localhost");
+        assert_eq!(uri.host.port, None);
+        assert_eq!(uri.path_and_query, "/");
+        assert_eq!(uri.to_string(), "http://localhost/");
+
+        let uri = Uri::parse("https://[::1]:443/path?query");
+        assert!(uri.is_some());
+        let uri = uri.unwrap();
+        assert_eq!(uri.scheme, "https");
+        assert_eq!(uri.host.name, "[::1]");
+        assert_eq!(uri.host.port, Some(443));
+        assert_eq!(uri.path_and_query, "/path?query");
+        assert_eq!(uri.to_string(), "https://[::1]:443/path?query");
     }
 }
