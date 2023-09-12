@@ -110,7 +110,7 @@ impl Headers {
         self.get_last("Content-Length").and_then(|v| v.parse().ok())
     }
 
-    pub fn push<S: Into<Cow<'static, str>>>(&mut self, name: S, value: S) {
+    pub fn push<N: Into<Cow<'static, str>>, V: Into<Cow<'static, str>>>(&mut self, name: N, value: V) {
         self.entries.push((name.into(), value.into()))
     }
 

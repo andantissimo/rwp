@@ -45,32 +45,14 @@ unsafe fn EVP_MD_CTX_free(ctx: *mut EVP_MD_CTX) {
 
 #[derive(Clone)]
 pub struct Htpasswd {
-    entries: Arc<RwLock<HashMap<String, (String, String)>>>,
+    entries: Arc<RwLock<Option<HashMap<String, (String, String)>>>>,
 }
 
 impl Htpasswd {
-    pub fn new() -> Self {
-        let path = ".htpasswd";
-        let mut entries = HashMap::new();
-        if let Ok(data) = read_to_string(path) { Self::parse(&data, &mut entries) }
-        let entries_reader = Arc::new(RwLock::new(entries));
-        let entries_writer = entries_reader.clone();
-        spawn(move || {
-            let mut lastmtime = metadata(path).and_then(|m| m.modified()).unwrap_or(UNIX_EPOCH);
-            loop {
-                sleep(Duration::from_secs(4));
-                let mtime = metadata(path).and_then(|m| m.modified()).unwrap_or(UNIX_EPOCH);
-                if mtime == lastmtime { continue }
-                lastmtime = mtime;
-                let mut entries = entries_writer.write().unwrap();
-                entries.clear();
-                if let Ok(data) = read_to_string(path) { Self::parse(&data, &mut entries) }
-            }
-        });
-        Self { entries: entries_reader }
-    }
+    const PATH: &str = ".htpasswd";
 
-    fn parse(data: &str, entries: &mut HashMap<String, (String, String)>) {
+    fn parse(data: &str) -> HashMap<String, (String, String)> {
+        let mut entries = HashMap::new();
         for line in data.split('\n') {
             if let Some((username, salthash)) = line.split_once(':') {
                 if salthash.starts_with("$apr1$") {
@@ -80,10 +62,34 @@ impl Htpasswd {
                 }
             }
         }
+        entries
+    }
+
+    pub fn new() -> Self {
+        let entries = match read_to_string(Self::PATH) {
+            Ok(data) => Some(Self::parse(&data)),
+            Err(_) => None
+        };
+        let entries_reader = Arc::new(RwLock::new(entries));
+        let entries_writer = entries_reader.clone();
+        spawn(move || {
+            let mut lastmtime = metadata(Self::PATH).and_then(|m| m.modified()).unwrap_or(UNIX_EPOCH);
+            loop {
+                sleep(Duration::from_secs(4));
+                let mtime = metadata(Self::PATH).and_then(|m| m.modified()).unwrap_or(UNIX_EPOCH);
+                if mtime == lastmtime { continue }
+                lastmtime = mtime;
+                match read_to_string(Self::PATH) {
+                    Ok(data) => entries_writer.write().unwrap().replace(Self::parse(&data)),
+                    Err(_) => entries_writer.write().unwrap().take(),
+                };
+            }
+        });
+        Self { entries: entries_reader }
     }
 
     pub fn contains(&self, username: &str, password: &str) -> bool {
-        self.entries.read().unwrap().get(username).is_some_and(|(salt, hash)| {
+        self.entries.read().unwrap().as_ref().is_some_and(|m| m.get(username).is_some_and(|(salt, hash)| {
             let (key, apr1, salt) = (password.as_bytes(), b"$apr1$", salt.as_bytes());
             unsafe {
                 let md5 = EVP_MD_CTX_new();
@@ -163,7 +169,7 @@ impl Htpasswd {
 
                 encrypted.eq(hash.as_bytes())
             }
-        })
+        }))
     }
 
     pub fn authorize(&self, value: &str) -> bool {
@@ -183,7 +189,7 @@ impl Htpasswd {
         })
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.entries.read().unwrap().is_empty()
+    pub fn exists(&self) -> bool {
+        self.entries.read().unwrap().is_some()
     }
 }

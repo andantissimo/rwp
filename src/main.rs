@@ -302,6 +302,7 @@ fn main() -> IoResult<()> {
     const PROXY_AUTHENTICATION_REQUIRED: &[u8] = b"\
         HTTP/1.1 407 Proxy Authentication Required\r\n\
         Proxy-Authentication: Basic\r\n\
+        Proxy-Connection: close\r\n\
         \r\n";
     const NOT_IMPLEMENTED: &[u8] = b"\
         HTTP/1.1 501 Not Implemented\r\n\
@@ -383,7 +384,7 @@ fn main() -> IoResult<()> {
                                 }
                             }
                             #[cfg(feature = "htpasswd")]
-                            if !htpasswd.is_empty() && !req.headers.get_once("Proxy-Authorization").is_some_and(|v| htpasswd.authorize(v)) {
+                            if htpasswd.exists() && !req.headers.get_once("Proxy-Authorization").is_some_and(|v| htpasswd.authorize(v)) {
                                 return if downstream.write_all(PROXY_AUTHENTICATION_REQUIRED).is_ok() {
                                     access_log.print(407, Some(0))
                                 }
