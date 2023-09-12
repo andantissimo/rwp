@@ -22,7 +22,7 @@ use http::{Headers, Host, Request, Response, Uri};
 type time_t = c_long;
 
 #[allow(non_camel_case_types)]
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(C)]
 struct tm {
     tm_sec   : c_int,
@@ -228,7 +228,7 @@ impl Resolver {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 struct LocalTime {
     time: time_t,
 }
@@ -590,7 +590,7 @@ fn main() -> IoResult<()> {
                                                     if verbosity >= 2 { eprintln!("  {:?}", e) }
                                                     return access_log.print(499, Some(0))
                                                 }
-                                                if req.method == "HEAD" || res.status == 204 || res.status == 304 {
+                                                if req.method == "HEAD" || !res.has_body() {
                                                     return access_log.print(res.status, Some(0))
                                                 }
                                                 match copy_body(&res.headers, &mut response_reader, &mut downstream) {

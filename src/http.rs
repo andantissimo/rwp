@@ -3,10 +3,12 @@ use std::fmt::{Display, Formatter, Result as FmtResult};
 use std::io::{BufRead, Error as IoError, ErrorKind as IoErrorKind, Result as IoResult, Write};
 use std::net::{AddrParseError, IpAddr, Ipv4Addr, Ipv6Addr};
 
+#[derive(Clone)]
 pub struct Headers {
     entries: Vec<(Cow<'static, str>, Cow<'static, str>)>,
 }
 
+#[derive(Clone)]
 pub struct Request {
     pub method: String,
     pub target: String,
@@ -14,6 +16,7 @@ pub struct Request {
     pub headers: Headers,
 }
 
+#[derive(Clone)]
 pub struct Response {
     pub protocol: String,
     pub status: u16,
@@ -21,11 +24,13 @@ pub struct Response {
     pub headers: Headers,
 }
 
+#[derive(Clone, PartialEq, Eq)]
 pub struct Host {
     pub name: String,
     pub port: Option<u16>,
 }
 
+#[derive(Clone, PartialEq, Eq)]
 pub struct Uri {
     pub scheme: String,
     pub host: Host,
@@ -72,28 +77,37 @@ impl Headers {
         |c| c == ','
     }
 
+    pub fn contains_any<F: Fn(&str) -> bool>(&self, name: &str, f: F) -> bool {
+        let pat = Self::value_separator(name);
+        self.entries.iter()
+            .filter(|(n, _)| n.eq_ignore_ascii_case(name))
+            .flat_map(|(_, v)| v.split(pat).map(|v| v.trim()))
+            .any(f)
+    }
+
     pub fn contains(&self, name: &str, value: &str) -> bool {
-        let pat = Self::value_separator(name);
-        self.entries.iter()
-            .filter(|(n, _)| n.eq_ignore_ascii_case(name))
-            .flat_map(|(_, v)| v.split(pat).map(|v| v.trim()))
-            .any(|v| v.eq_ignore_ascii_case(value))
+        self.contains_any(name, |v| v.eq_ignore_ascii_case(value))
     }
 
-    pub fn get(&self, name: &str) -> Vec<&str> {
-        let pat = Self::value_separator(name);
-        self.entries.iter()
-            .filter(|(n, _)| n.eq_ignore_ascii_case(name))
-            .flat_map(|(_, v)| v.split(pat).map(|v| v.trim()))
-            .collect()
-    }
-
+    #[allow(dead_code)]
     pub fn get_once(&self, name: &str) -> Option<&str> {
-        match self.get(name) { v if v.len() == 1 => Some(&v[0]), _ => None }
+        let pat = Self::value_separator(name);
+        let mut iter = self.entries.iter()
+            .filter(|(n, _)| n.eq_ignore_ascii_case(name))
+            .flat_map(|(_, v)| v.split(pat).map(|v| v.trim()));
+        match (iter.next(), iter.next()) { (Some(value), None) => Some(value), _ => None }
+    }
+
+    pub fn get_last(&self, name: &str) -> Option<&str> {
+        let pat = Self::value_separator(name);
+        self.entries.iter()
+            .filter(|(n, _)| n.eq_ignore_ascii_case(name))
+            .flat_map(|(_, v)| v.split(pat).map(|v| v.trim()))
+            .last()
     }
 
     pub fn get_content_length(&self) -> Option<u64> {
-        self.get_once("Content-Length").and_then(|v| v.parse().ok())
+        self.get_last("Content-Length").and_then(|v| v.parse().ok())
     }
 
     pub fn push<S: Into<Cow<'static, str>>>(&mut self, name: S, value: S) {
@@ -183,6 +197,10 @@ impl Response {
                 }
             }
         }
+    }
+
+    pub fn has_body(&self) -> bool {
+        200 <= self.status && self.status != 204 && self.status != 304
     }
 
     pub fn write<W: Write>(&self, writer: &mut W) -> IoResult<()> {
