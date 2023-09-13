@@ -1,14 +1,14 @@
 use std::process::Command;
 
 #[allow(dead_code)]
-fn cfg_if_version<F: FnOnce(&str) -> bool>(id: &str, pkg: &str, f: F) {
-    if Command::new("pkg-config").args(["--modversion", pkg])
-        .output().is_ok_and(|o| f(&String::from_utf8_lossy(&o.stdout))) {
-        println!("cargo:rustc-cfg={}", id);
-    }
+fn pkg_config(opt: &str, pkg: &str) -> Option<String> {
+    Command::new("pkg-config").args([opt, pkg]).output()
+        .ok().and_then(|o| String::from_utf8(o.stdout).ok())
 }
 
 fn main() {
     #[cfg(feature = "htpasswd")]
-    cfg_if_version("openssl10", "openssl", |v| v.starts_with("1.0."));
+    if pkg_config("--modversion", "openssl").is_some_and(|v| v.starts_with("1.0.")) {
+        println!("cargo:rustc-cfg={}", "openssl10")
+    }
 }

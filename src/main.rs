@@ -1,7 +1,5 @@
 use std::collections::HashMap;
 use std::env::args;
-use std::ffi::{CStr, CString, c_char, c_int, c_long};
-use std::fmt::{Display, Formatter, Result as FmtResult};
 use std::fs::{metadata, read_to_string};
 use std::io::{BufRead, BufReader, Error as IoError, ErrorKind, Read, Result as IoResult, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
@@ -18,31 +16,8 @@ use ncsa::Htpasswd;
 mod http;
 use http::{Headers, Host, Request, Response, Uri};
 
-#[allow(non_camel_case_types)]
-type time_t = c_long;
-
-#[allow(non_camel_case_types)]
-#[derive(Clone, Copy, PartialEq, Eq)]
-#[repr(C)]
-struct tm {
-    tm_sec   : c_int,
-    tm_min   : c_int,
-    tm_hour  : c_int,
-    tm_mday  : c_int,
-    tm_mon   : c_int,
-    tm_year  : c_int,
-    tm_wday  : c_int,
-    tm_yday  : c_int,
-    tm_isdst : c_int,
-    tm_gmtoff: c_long,
-    tm_zone  : *const c_char,
-}
-
-extern "C" {
-    fn localtime(time: *const time_t) -> *const tm;
-    fn strftime(s: *mut c_char, max: usize, format: *const c_char, tm: *const tm) -> usize;
-    fn time(time: *mut time_t) -> time_t;
-}
+mod time;
+use time::LocalTime;
 
 enum Errors {
     I(IoError),
@@ -225,33 +200,6 @@ impl Resolver {
         let addr = format!("{}:0", hostname).to_socket_addrs()?.next().unwrap().ip();
         self.cache.write().unwrap().insert(hostname.into(), (addr, now + self.ttl));
         Ok(addr)
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct LocalTime {
-    time: time_t,
-}
-
-impl LocalTime {
-    fn now() -> Self {
-        unsafe {
-            let mut t = 0;
-            time(&mut t);
-            Self { time: t }
-        }
-    }
-}
-
-impl Display for LocalTime {
-    fn fmt(&self, f: &mut Formatter) -> FmtResult {
-        unsafe {
-            let fmt = CString::new("%d/%b/%Y:%H:%M:%S %z").unwrap();
-            let tm = localtime(&self.time);
-            let mut s: [c_char; 32] = [0; 32];
-            strftime(s.as_mut_ptr(), s.len(), fmt.as_ptr(), tm);
-            write!(f, "{}", CStr::from_ptr(s.as_ptr()).to_str().unwrap())
-        }
     }
 }
 

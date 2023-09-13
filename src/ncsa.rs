@@ -32,16 +32,12 @@ extern "C" {
 #[allow(non_snake_case)]
 #[cfg(openssl10)]
 #[inline]
-unsafe fn EVP_MD_CTX_new() -> *mut EVP_MD_CTX {
-    EVP_MD_CTX_create()
-}
+unsafe fn EVP_MD_CTX_new() -> *mut EVP_MD_CTX { EVP_MD_CTX_create() }
 
 #[allow(non_snake_case)]
 #[cfg(openssl10)]
 #[inline]
-unsafe fn EVP_MD_CTX_free(ctx: *mut EVP_MD_CTX) {
-    EVP_MD_CTX_destroy(ctx)
-}
+unsafe fn EVP_MD_CTX_free(ctx: *mut EVP_MD_CTX) { EVP_MD_CTX_destroy(ctx) }
 
 #[derive(Clone)]
 pub struct Htpasswd {
@@ -181,10 +177,8 @@ impl Htpasswd {
             let n = unsafe { EVP_DecodeBlock(t.as_mut_ptr(), data.as_ptr(), data.len() as c_int) };
             if n < 0 { return false }
             t.resize(n as usize, 0);
-            String::from_utf8(t).is_ok_and(|credentials| {
-                credentials.split_once(':').is_some_and(|(username, password)| {
-                    self.contains(username, password)
-                })
+            String::from_utf8_lossy(&t).split_once(':').is_some_and(|(username, password)| {
+                self.contains(username, password)
             })
         })
     }
