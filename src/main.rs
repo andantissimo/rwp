@@ -35,9 +35,10 @@ fn unmap_ipv4_in_ipv6(addr: &IpAddr) -> IpAddr {
     }
 }
 
-fn is_forbidden(addr: &IpAddr) -> bool {
+fn is_forbidden(addr: &IpAddr, forbid_loopback: bool) -> bool {
     let addr = unmap_ipv4_in_ipv6(addr);
-    addr.is_unspecified() || addr.is_loopback() || addr.is_multicast() || match addr {
+    if addr.is_loopback() { return forbid_loopback }
+    addr.is_unspecified() || addr.is_multicast() || match addr {
         IpAddr::V4(addr) => addr.is_link_local() || addr.is_broadcast(),
         IpAddr::V6(addr) => (addr.segments()[0] & 0xffc0) == 0xfe80,
     }
@@ -270,13 +271,15 @@ fn main() -> IoResult<()> {
         eprintln!("  -s, --silent         Decrease verbosity");
         eprintln!("  -v, --verbose        Increase verbosity");
         eprintln!("  -4, --ipv4-only      Do not listen on IPv6");
+        eprintln!("  -l, --localhost      Allow localhost as upstream");
         eprintln!("  -H, --hosts <path>   Hosts files to be read in addition to /etc/hosts");
         eprintln!("  -p, --port <number>  Listen on port (default: 8080)");
         exit(code)
     };
-    let (verbosity, ipv4only, hosts_files, port) = {
+    let (verbosity, ipv4_only, localhost, hosts_files, port) = {
         let mut verbosity = 1;
-        let mut ipv4only = false;
+        let mut ipv4_only = false;
+        let mut localhost = false;
         let mut hosts = vec!["/etc/hosts".into()];
         let mut port = 8080;
         let mut iter = args().skip(1);
@@ -286,7 +289,8 @@ fn main() -> IoResult<()> {
                 "-s" | "--silent"    => verbosity -= 1,
                 "-v" | "--verbose"   => verbosity += 1,
                 "-vv"                => verbosity += 2,
-                "-4" | "--ipv4-only" => ipv4only = true,
+                "-4" | "--ipv4-only" => ipv4_only = true,
+                "-l" | "--localhost" => localhost = true,
                 "-H" | "--hosts" => match iter.next() {
                     Some(v) => hosts.push(v),
                     None => print_help_and_exit(1)
@@ -298,13 +302,14 @@ fn main() -> IoResult<()> {
                 _ => print_help_and_exit(1)
             }
         }
-        (verbosity, ipv4only, hosts, port)
+        (verbosity, ipv4_only, localhost, hosts, port)
     };
+    let forbid_loopback = !localhost;
     let resolver = Resolver::new(hosts_files, Duration::from_secs(120));
     #[cfg(feature = "htpasswd")]
     let htpasswd = Htpasswd::new();
 
-    let listener = TcpListener::bind(if ipv4only {
+    let listener = TcpListener::bind(if ipv4_only {
         SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), port)
     } else {
         SocketAddr::new(Ipv6Addr::UNSPECIFIED.into(), port)
@@ -348,14 +353,8 @@ fn main() -> IoResult<()> {
                                         }
                                     }
                                 };
-                                if host.name.eq_ignore_ascii_case("localhost") {
-                                    if verbosity >= 3 { eprintln!("Forbidden host: {}", host.name) }
-                                    return if downstream.write_all(FORBIDDEN).is_ok() {
-                                        access_log.print(403, Some(0))
-                                    }
-                                }
                                 let addr = match host.to_addr() {
-                                    Ok(addr) if !is_forbidden(&addr) => addr,
+                                    Ok(addr) if !is_forbidden(&addr, forbid_loopback) => addr,
                                     Ok(_) => {
                                         if verbosity >= 3 { eprintln!("Forbidden host: {}", host.name) }
                                         return if downstream.write_all(FORBIDDEN).is_ok() {
@@ -369,7 +368,7 @@ fn main() -> IoResult<()> {
                                         }
                                     }
                                     _ => match resolver.resolve(&host.name) {
-                                        Ok(addr) if !is_forbidden(&addr) => addr,
+                                        Ok(addr) if !is_forbidden(&addr, forbid_loopback) => addr,
                                         Ok(_) => {
                                             if verbosity >= 3 { eprintln!("Forbidden host: {}", host.name) }
                                             return if downstream.write_all(FORBIDDEN).is_ok() {
@@ -456,14 +455,8 @@ fn main() -> IoResult<()> {
                                         access_log.print(501, Some(0))
                                     }
                                 }
-                                if uri.host.name.eq_ignore_ascii_case("localhost") {
-                                    if verbosity >= 3 { eprintln!("Forbidden host: {}", uri.host) }
-                                    return if downstream.write_all(FORBIDDEN).is_ok() {
-                                        access_log.print(403, Some(0))
-                                    }
-                                }
                                 let addr = match uri.host.to_addr() {
-                                    Ok(addr) if !is_forbidden(&addr) => addr,
+                                    Ok(addr) if !is_forbidden(&addr, forbid_loopback) => addr,
                                     Ok(_) => {
                                         if verbosity >= 3 { eprintln!("Forbidden host: {}", uri.host) }
                                         return if downstream.write_all(FORBIDDEN).is_ok() {
@@ -477,7 +470,7 @@ fn main() -> IoResult<()> {
                                         }
                                     }
                                     _ => match resolver.resolve(&uri.host.name) {
-                                        Ok(addr) if !is_forbidden(&addr) => addr,
+                                        Ok(addr) if !is_forbidden(&addr, forbid_loopback) => addr,
                                         Ok(_) => {
                                             if verbosity >= 3 { eprintln!("Forbidden host: {}", uri.host) }
                                             return if downstream.write_all(FORBIDDEN).is_ok() {
