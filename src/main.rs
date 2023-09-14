@@ -353,7 +353,7 @@ fn main() -> IoResult<()> {
                                         }
                                     }
                                 };
-                                let addr = match host.to_addr() {
+                                let addr = match IpAddr::try_from(&host) {
                                     Ok(addr) if !is_forbidden(&addr, forbid_loopback) => addr,
                                     Ok(_) => {
                                         if verbosity >= 3 { eprintln!("Forbidden host: {}", host.name) }
@@ -455,7 +455,7 @@ fn main() -> IoResult<()> {
                                         access_log.print(501, Some(0))
                                     }
                                 }
-                                let addr = match uri.host.to_addr() {
+                                let addr = match IpAddr::try_from(&uri.host) {
                                     Ok(addr) if !is_forbidden(&addr, forbid_loopback) => addr,
                                     Ok(_) => {
                                         if verbosity >= 3 { eprintln!("Forbidden host: {}", uri.host) }

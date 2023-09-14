@@ -253,9 +253,11 @@ impl From<&String> for Host {
     }
 }
 
-impl Host {
-    pub fn to_addr(&self) -> Result<IpAddr, AddrParseError> {
-        let addr = self.name.as_str();
+impl TryFrom<&Host> for IpAddr {
+    type Error = AddrParseError;
+
+    fn try_from(value: &Host) -> Result<Self, Self::Error> {
+        let addr = value.name.as_str();
         if addr.starts_with('[') && addr.ends_with(']') {
             let addr = &addr[1..addr.len()-1];
             addr.parse::<Ipv6Addr>().and_then(|v6| Ok(v6.into()))
@@ -372,6 +374,21 @@ mod tests {
         let mut cur = Cursor::new(b"Unexpected 500 EOF\r\n");
         let res = Response::read(&mut cur);
         assert!(res.is_err_and(|e| e.kind() == IoErrorKind::UnexpectedEof));
+    }
+
+    #[test]
+    fn test_host() {
+        let host = Host::from("localhost");
+        assert_eq!(host.name, "localhost");
+        assert_eq!(host.port, None);
+        assert_eq!(host.to_string(), "localhost");
+        assert!(IpAddr::try_from(&host).is_err());
+
+        let host = Host::from("[::1]:443");
+        assert_eq!(host.name, "[::1]");
+        assert_eq!(host.port, Some(443));
+        assert_eq!(host.to_string(), "[::1]:443");
+        assert!(IpAddr::try_from(&host).is_ok_and(|addr| addr == IpAddr::V6(Ipv6Addr::LOCALHOST)));
     }
 
     #[test]
