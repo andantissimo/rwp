@@ -1,7 +1,14 @@
 use std::borrow::Cow;
+use std::error::Error;
 use std::fmt::{Display, Formatter, Result as FmtResult};
 use std::io::{BufRead, Error as IoError, ErrorKind as IoErrorKind, Result as IoResult, Write};
 use std::net::{AddrParseError, IpAddr, Ipv4Addr, Ipv6Addr};
+use std::str::FromStr;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UriKind {
+    Absolute,
+}
 
 #[derive(Clone, Debug)]
 pub struct Headers {
@@ -36,6 +43,9 @@ pub struct Uri {
     pub host: Host,
     pub path_and_query: String,
 }
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UriParseError(UriKind);
 
 fn decode(buf: &[u8]) -> String {
     let mut s = String::with_capacity(buf.len());
@@ -226,16 +236,24 @@ impl Display for Host {
     }
 }
 
-impl Host {
-    pub fn parse(host: &str) -> Self {
-        if let Some((name, port)) = host.rsplit_once(':') {
+impl From<&str> for Host {
+    fn from(value: &str) -> Self {
+        if let Some((name, port)) = value.rsplit_once(':') {
             if let Ok(port) = u16::from_str_radix(port, 10) {
                 return Self { name: name.into(), port: Some(port) }
             }
         }
-        Self { name: host.into(), port: None }
+        Self { name: value.into(), port: None }
     }
+}
 
+impl From<&String> for Host {
+    fn from(value: &String) -> Self {
+        Self::from(value.as_str())
+    }
+}
+
+impl Host {
     pub fn to_addr(&self) -> Result<IpAddr, AddrParseError> {
         let addr = self.name.as_str();
         if addr.starts_with('[') && addr.ends_with(']') {
@@ -253,14 +271,33 @@ impl Display for Uri {
     }
 }
 
-impl Uri {
-    pub fn parse(uri: &str) -> Option<Self> {
-        uri.split_once("://").and_then(|(scheme, host_path_query)| {
-            host_path_query.find('/').and_then(|slash| {
+impl FromStr for Uri {
+    type Err = UriParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if let Some((scheme, host_path_query)) = s.split_once("://") {
+            if let Some(slash) = host_path_query.find('/') {
                 let (host, path_and_query) = host_path_query.split_at(slash);
-                Some(Self { scheme: scheme.into(), host: Host::parse(host), path_and_query: path_and_query.into() })
-            })
-        })
+                return Ok(Self { scheme: scheme.into(), host: host.into(), path_and_query: path_and_query.into() })
+            }
+        }
+        Err(UriParseError(UriKind::Absolute))
+    }
+}
+
+impl Display for UriParseError {
+    #[allow(deprecated)]
+    fn fmt(&self, f: &mut Formatter) -> FmtResult {
+        f.write_str(self.description())
+    }
+}
+
+impl Error for UriParseError {
+    #[allow(deprecated)]
+    fn description(&self) -> &str {
+        match self.0 {
+            UriKind::Absolute => "invalid absolute URI syntax",
+        }
     }
 }
 
@@ -339,8 +376,8 @@ mod tests {
 
     #[test]
     fn test_uri() {
-        let uri = Uri::parse("http://localhost/");
-        assert!(uri.is_some());
+        let uri = Uri::from_str("http://localhost/");
+        assert!(uri.is_ok());
         let uri = uri.unwrap();
         assert_eq!(uri.scheme, "http");
         assert_eq!(uri.host.name, "localhost");
@@ -348,13 +385,16 @@ mod tests {
         assert_eq!(uri.path_and_query, "/");
         assert_eq!(uri.to_string(), "http://localhost/");
 
-        let uri = Uri::parse("https://[::1]:443/path?query");
-        assert!(uri.is_some());
+        let uri = Uri::from_str("https://[::1]:443/path?query");
+        assert!(uri.is_ok());
         let uri = uri.unwrap();
         assert_eq!(uri.scheme, "https");
         assert_eq!(uri.host.name, "[::1]");
         assert_eq!(uri.host.port, Some(443));
         assert_eq!(uri.path_and_query, "/path?query");
         assert_eq!(uri.to_string(), "https://[::1]:443/path?query");
+
+        let uri = Uri::from_str("invalid URI");
+        assert!(uri.is_err());
     }
 }

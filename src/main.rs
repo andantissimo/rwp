@@ -343,7 +343,7 @@ fn main() -> IoResult<()> {
                                 }
                             }
                             if req.method == "CONNECT" {
-                                let host = Host::parse(&req.target);
+                                let host = Host::from(&req.target);
                                 let port = match host.port {
                                     Some(port) => port,
                                     _ => {
@@ -448,7 +448,7 @@ fn main() -> IoResult<()> {
                                         }
                                     }
                                 }
-                            } else if let Some(uri) = Uri::parse(&req.target) {
+                            } else if let Ok(uri) = req.target.parse::<Uri>() {
                                 if uri.scheme != "http" {
                                     if verbosity >= 3 { eprintln!("Unsupported scheme: {}", uri.scheme) }
                                     return if downstream.write_all(NOT_IMPLEMENTED).is_ok() {
