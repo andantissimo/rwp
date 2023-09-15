@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::env::args;
 use std::fs::{metadata, read_to_string};
-use std::io::{BufRead, BufReader, Error as IoError, ErrorKind, Read, Result as IoResult, Write};
+use std::io::{BufRead, BufReader, Error as IoError, ErrorKind as IoErrorKind, Read, Result as IoResult, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::process::exit;
 use std::sync::{Arc, RwLock};
@@ -85,7 +85,7 @@ fn copy_chunked<R: BufRead, W: Write>(reader: &mut R, writer: &mut W) -> Result<
         buf.clear();
         match reader.read_until(b'\n', &mut buf) {
             Ok(n) => {
-                if !buf.ends_with(b"\r\n") { return Err(Errors::I(ErrorKind::InvalidData.into())) }
+                if !buf.ends_with(b"\r\n") { return Err(Errors::I(IoErrorKind::InvalidData.into())) }
                 if let Err(e) = writer.write_all(&buf[..n]) { return Err(Errors::O(e)) }
                 len += n as u64;
                 let hex = String::from_iter(buf[..n-2].iter().map(|c| *c as char));
@@ -94,7 +94,7 @@ fn copy_chunked<R: BufRead, W: Write>(reader: &mut R, writer: &mut W) -> Result<
                     buf.resize(n, 0);
                     match reader.read_exact(&mut buf) {
                         Ok(_) => {
-                            if !buf.ends_with(b"\r\n") { return Err(Errors::I(ErrorKind::InvalidData.into())) }
+                            if !buf.ends_with(b"\r\n") { return Err(Errors::I(IoErrorKind::InvalidData.into())) }
                             if let Err(e) = writer.write_all(&buf[..n]) { return Err(Errors::O(e)) }
                         }
                         Err(e) => {
@@ -104,7 +104,7 @@ fn copy_chunked<R: BufRead, W: Write>(reader: &mut R, writer: &mut W) -> Result<
                     len += n as u64;
                     if n == 2 { return Ok(len) }
                 } else {
-                    return Err(Errors::I(ErrorKind::InvalidData.into()))
+                    return Err(Errors::I(IoErrorKind::InvalidData.into()))
                 }
             }
             Err(e) => {
@@ -400,14 +400,14 @@ fn main() -> IoResult<()> {
                                         let writing_target = req.target.clone();
                                         let upload = spawn(move || {
                                             match copy_all(&mut downstream_reader, &mut upstream_writer) {
-                                                Err(Errors::I(e)) if e.kind() == ErrorKind::ConnectionReset => {
+                                                Err(Errors::I(e)) if e.kind() == IoErrorKind::ConnectionReset => {
                                                     if verbosity >= 3 { eprintln!("Connection reset from downstream: {}", remote_addr) }
                                                 }
                                                 Err(Errors::I(e)) => {
                                                     if verbosity >= 2 { eprintln!("Error while reading packets from downstream: {}", remote_addr) }
                                                     if verbosity >= 2 { eprintln!("  {:?}", e) }
                                                 }
-                                                Err(Errors::O(e)) if e.kind() == ErrorKind::BrokenPipe => {
+                                                Err(Errors::O(e)) if e.kind() == IoErrorKind::BrokenPipe => {
                                                     if verbosity >= 3 { eprintln!("Broken pipe to upstream: {}", writing_target) }
                                                 }
                                                 Err(Errors::O(e)) => {
@@ -420,14 +420,14 @@ fn main() -> IoResult<()> {
                                         let reading_target = req.target.clone();
                                         let download = spawn(move || {
                                             match copy_all(&mut upstream_reader, &mut downstream_writer) {
-                                                Err(Errors::I(e)) if e.kind() == ErrorKind::ConnectionReset => {
+                                                Err(Errors::I(e)) if e.kind() == IoErrorKind::ConnectionReset => {
                                                     if verbosity >= 3 { eprintln!("Connection reset from upstream: {}", reading_target) }
                                                 }
                                                 Err(Errors::I(e)) => {
                                                     if verbosity >= 1 { eprintln!("Error while reading packets from upstream: {}", reading_target) }
                                                     if verbosity >= 2 { eprintln!("  {:?}", e) }
                                                 }
-                                                Err(Errors::O(e)) if e.kind() == ErrorKind::BrokenPipe => {
+                                                Err(Errors::O(e)) if e.kind() == IoErrorKind::BrokenPipe => {
                                                     if verbosity >= 3 { eprintln!("Broken pipe to downstream: {}", remote_addr) }
                                                 }
                                                 Err(Errors::O(e)) => {
@@ -577,7 +577,7 @@ fn main() -> IoResult<()> {
                         }
                         Ok(None) => {
                             if verbosity >= 2 { eprintln!("Error while reading headers from downstream: {}", remote_addr) }
-                            if verbosity >= 2 { eprintln!("  {:?}", IoError::from(ErrorKind::UnexpectedEof)) }
+                            if verbosity >= 2 { eprintln!("  {:?}", IoError::from(IoErrorKind::UnexpectedEof)) }
                         }
                         Err(e) => {
                             if verbosity >= 2 { eprintln!("Error while reading headers from downstream: {}", remote_addr) }
