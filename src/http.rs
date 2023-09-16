@@ -260,9 +260,9 @@ impl TryFrom<&Host> for IpAddr {
         let addr = value.name.as_str();
         if addr.starts_with('[') && addr.ends_with(']') {
             let addr = &addr[1..addr.len()-1];
-            addr.parse::<Ipv6Addr>().and_then(|v6| Ok(v6.into()))
+            addr.parse::<Ipv6Addr>().map(|v6| v6.into())
         } else {
-            addr.parse::<Ipv4Addr>().and_then(|v4| Ok(v4.into()))
+            addr.parse::<Ipv4Addr>().map(|v4| v4.into())
         }
     }
 }

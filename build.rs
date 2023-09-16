@@ -3,7 +3,7 @@ use std::process::Command;
 #[allow(dead_code)]
 fn pkg_config(opt: &str, pkg: &str) -> Option<String> {
     Command::new("pkg-config").args([opt, pkg]).output()
-        .ok().and_then(|o| String::from_utf8(o.stdout).ok())
+        .ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().into())
 }
 
 fn main() {
