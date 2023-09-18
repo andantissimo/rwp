@@ -1,4 +1,4 @@
-use std::ffi::{CStr, CString, c_char, c_int, c_long};
+use std::ffi::{CStr, c_char, c_int, c_long};
 use std::fmt::{Display, Formatter, Result as FmtResult};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -35,10 +35,9 @@ pub struct LocalTime {
 impl Display for LocalTime {
     fn fmt(&self, f: &mut Formatter) -> FmtResult {
         unsafe {
-            let mut s: [c_char; 32] = [0; 32];
-            let fmt = CString::new("%d/%b/%Y:%H:%M:%S %z").unwrap();
-            let tm = localtime(&self.time);
-            strftime(s.as_mut_ptr(), s.len(), fmt.as_ptr(), tm);
+            let mut s = [0; 32];
+            let tm = *localtime(&self.time);
+            strftime(s.as_mut_ptr(), s.len(), b"%d/%b/%Y:%H:%M:%S %z\0".as_ptr(), &tm);
             write!(f, "{}", CStr::from_ptr(s.as_ptr()).to_str().unwrap())
         }
     }
