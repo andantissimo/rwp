@@ -37,7 +37,7 @@ impl Display for LocalTime {
         unsafe {
             let mut s = [0; 32];
             let tm = *localtime(&self.time);
-            strftime(s.as_mut_ptr(), s.len(), b"%d/%b/%Y:%H:%M:%S %z\0".as_ptr(), &tm);
+            strftime(s.as_mut_ptr(), s.len(), b"%d/%b/%Y:%H:%M:%S %z\0".as_ptr() as *const c_char, &tm);
             write!(f, "{}", CStr::from_ptr(s.as_ptr()).to_str().unwrap())
         }
     }
