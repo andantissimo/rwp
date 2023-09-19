@@ -176,8 +176,8 @@ impl Htpasswd {
             t.resize((data.len() + 2) * 3 / 4, 0);
             let n = unsafe { EVP_DecodeBlock(t.as_mut_ptr(), data.as_ptr(), data.len() as c_int) };
             if n < 0 { return false }
-            t.resize(n as usize, 0);
-            String::from_utf8_lossy(&t).split_once(':').is_some_and(|(username, password)| {
+            let n = t.iter().take_while(|c| **c != 0).count();
+            String::from_utf8_lossy(&t[..n]).split_once(':').is_some_and(|(username, password)| {
                 self.contains(username, password)
             })
         })
@@ -185,5 +185,17 @@ impl Htpasswd {
 
     pub fn exists(&self) -> bool {
         self.entries.read().unwrap().is_some()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_htpasswd() {
+        let entries = Htpasswd::parse("username:$apr1$v5wryq2g$oliRVLsl/.0Kv77Go9SOQ/");
+        let htpasswd = Htpasswd { entries: Arc::new(RwLock::new(Some(entries))) };
+        assert!(htpasswd.authorize("Basic dXNlcm5hbWU6cGFzc3dvcmQ="));
     }
 }

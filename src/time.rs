@@ -54,3 +54,16 @@ impl LocalTime {
         Self::from(SystemTime::now())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::env::set_var;
+
+    #[test]
+    fn test_local_time() {
+        let time = LocalTime::from(UNIX_EPOCH);
+        set_var("TZ", "UTC");
+        assert_eq!(time.to_string(), "01/Jan/1970:00:00:00 +0000");
+    }
+}
