@@ -323,7 +323,7 @@ fn main() -> IoResult<()> {
                 #[cfg(feature = "htpasswd")]
                 let htpasswd = htpasswd.clone();
                 spawn(move || {
-                    let mut request_reader = BufReader::new(&mut downstream);
+                    let mut request_reader = BufReader::new(downstream.try_clone().unwrap());
                     match Request::read(&mut request_reader) {
                         Ok(Some(mut req)) => {
                             let access_log = match verbosity {
@@ -497,6 +497,56 @@ fn main() -> IoResult<()> {
                                                 access_log.print(502, Some(0))
                                             }
                                         }
+                                        if req.headers.contains("Expect", "100-continue") {
+                                            let mut response_reader = BufReader::new(upstream.try_clone().unwrap());
+                                            match Response::read(&mut response_reader) {
+                                                Ok(res) if res.status == 100 => {
+                                                    if let Err(e) = res.write(&mut downstream) {
+                                                        if verbosity >= 2 { eprintln!("Error while writing headers to downstream: {}", remote_addr) }
+                                                        if verbosity >= 2 { eprintln!("  {:?}", e) }
+                                                        return access_log.print(499, Some(0))
+                                                    }
+                                                }
+                                                Ok(res) => {
+                                                    if res.status < 200 {
+                                                        if verbosity >= 1 { eprintln!("Unsupported status: {}", res.status) }
+                                                        return if downstream.write_all(NOT_IMPLEMENTED).is_ok() {
+                                                            access_log.print(501, Some(0))
+                                                        }
+                                                    }
+                                                    if let Err(e) = res.write(&mut downstream) {
+                                                        if verbosity >= 2 { eprintln!("Error while writing headers to downstream: {}", remote_addr) }
+                                                        if verbosity >= 2 { eprintln!("  {:?}", e) }
+                                                        return access_log.print(499, Some(0))
+                                                    }
+                                                    if !res.has_body() {
+                                                        return access_log.print(res.status, Some(0))
+                                                    }
+                                                    match copy_body(&res.headers, &mut response_reader, &mut downstream) {
+                                                        Ok(sent) => {
+                                                            return access_log.print(res.status, Some(sent))
+                                                        }
+                                                        Err(Errors::I(e)) => {
+                                                            if verbosity >= 1 { eprintln!("Error while reading body from upstream: {}", uri.host) }
+                                                            if verbosity >= 2 { eprintln!("  {:?}", e) }
+                                                            return access_log.print(444, None)
+                                                        }
+                                                        Err(Errors::O(e)) => {
+                                                            if verbosity >= 2 { eprintln!("Error while writing body to downstream: {}", remote_addr) }
+                                                            if verbosity >= 2 { eprintln!("  {:?}", e) }
+                                                            return access_log.print(499, None)
+                                                        }
+                                                    }
+                                                }
+                                                Err(e) => {
+                                                    if verbosity >= 1 { eprintln!("Error while reading headers from upstream: {}", uri.host) }
+                                                    if verbosity >= 2 { eprintln!("  {:?}", e) }
+                                                    return if downstream.write_all(BAD_GATEWAY).is_ok() {
+                                                        access_log.print(502, Some(0))
+                                                    }
+                                                }
+                                            }
+                                        }
                                         match req.method.as_str() {
                                             "GET" | "HEAD" | "OPTIONS" => {}
                                             _ => {
@@ -517,7 +567,7 @@ fn main() -> IoResult<()> {
                                                 }
                                             }
                                         }
-                                        let mut response_reader = BufReader::new(&mut upstream);
+                                        let mut response_reader = BufReader::new(upstream);
                                         match Response::read(&mut response_reader) {
                                             Ok(mut res) => {
                                                 if res.status < 200 {
