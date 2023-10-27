@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::env::args;
+use std::fmt::Display;
 use std::fs::{metadata, read_to_string};
 use std::io::{BufRead, BufReader, Error as IoError, ErrorKind as IoErrorKind, Read, Result as IoResult, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
@@ -79,8 +80,8 @@ fn copy_exact<R: Read, W: Write>(reader: &mut R, writer: &mut W, mut len: u64) -
 }
 
 fn copy_chunked<R: BufRead, W: Write>(reader: &mut R, writer: &mut W) -> Result<u64, Errors> {
-    let mut buf: Vec<u8> = Vec::new();
-    let mut len: u64 = 0;
+    let mut buf = Vec::with_capacity(8192);
+    let mut len = 0;
     loop {
         buf.clear();
         match reader.read_until(b'\n', &mut buf) {
@@ -204,36 +205,35 @@ impl Resolver {
     }
 }
 
-struct RequestInfo {
+struct ReqInfo {
     remote_addr: IpAddr,
-    request_time: LocalTime,
+    req_time: LocalTime,
     method: String,
     target: String,
     protocol: String,
 }
 
 enum AccessLog {
-    Enabled(RequestInfo),
+    Enabled(ReqInfo),
     Disabled,
 }
 
 impl AccessLog {
-    fn new(remote_addr: IpAddr, request_time: LocalTime, request: &Request) -> Self {
-        Self::Enabled(RequestInfo {
+    fn new(remote_addr: IpAddr, req_time: LocalTime, req: &Request) -> Self {
+        Self::Enabled(ReqInfo {
             remote_addr,
-            request_time,
-            method: request.method.clone(),
-            target: request.target.clone(),
-            protocol: request.protocol.clone(),
+            req_time,
+            method: req.method.clone(),
+            target: req.target.clone(),
+            protocol: req.protocol.clone(),
         })
     }
 
-    fn print(&self, status: u16, sent: Option<u64>) {
+    fn print<N: Display>(&self, status: u16, sent: N) {
         match self {
             Self::Enabled(info) => {
-                let sent = if let Some(sent) = sent { sent.to_string() } else { "-".into() };
                 println!("{} - - [{}] \"{} {} {}\" {} {}",
-                    info.remote_addr, info.request_time, info.method, info.target, info.protocol, status, sent);
+                    info.remote_addr, info.req_time, info.method, info.target, info.protocol, status, sent);
             }
             Self::Disabled => {}
         }
@@ -318,7 +318,7 @@ fn main() -> IoResult<()> {
         match incoming {
             Ok(mut downstream) => {
                 let remote_addr = unmap_ipv4_in_ipv6(&downstream.peer_addr().unwrap().ip());
-                let request_time = LocalTime::now();
+                let req_time = LocalTime::now();
                 let resolver = resolver.clone();
                 #[cfg(feature = "htpasswd")]
                 let htpasswd = htpasswd.clone();
@@ -327,19 +327,19 @@ fn main() -> IoResult<()> {
                     match Request::read(&mut request_reader) {
                         Ok(Some(mut req)) => {
                             let access_log = match verbosity {
-                                v if v >= 1 => AccessLog::new(remote_addr, request_time, &req),
+                                v if v >= 1 => AccessLog::new(remote_addr, req_time, &req),
                                 _ => AccessLog::Disabled
                             };
                             if req.protocol != "HTTP/1.1" && req.protocol != "HTTP/1.0" {
                                 if verbosity >= 2 { eprintln!("Protocol not supported: {}", req.protocol) }
                                 return if downstream.write_all(HTTP_VERSION_NOT_SUPPORTED).is_ok() {
-                                    access_log.print(505, Some(0))
+                                    access_log.print(505, 0)
                                 }
                             }
                             #[cfg(feature = "htpasswd")]
                             if htpasswd.exists() && !req.headers.get_once("Proxy-Authorization").is_some_and(|v| htpasswd.authorize(v)) {
                                 return if downstream.write_all(PROXY_AUTHENTICATION_REQUIRED).is_ok() {
-                                    access_log.print(407, Some(0))
+                                    access_log.print(407, 0)
                                 }
                             }
                             if req.method == "CONNECT" {
@@ -349,7 +349,7 @@ fn main() -> IoResult<()> {
                                     _ => {
                                         if verbosity >= 3 { eprintln!("Malformed target: {}", req.target) }
                                         return if downstream.write_all(BAD_REQUEST).is_ok() {
-                                            access_log.print(400, Some(0));
+                                            access_log.print(400, 0);
                                         }
                                     }
                                 };
@@ -358,13 +358,13 @@ fn main() -> IoResult<()> {
                                     Ok(_) => {
                                         if verbosity >= 3 { eprintln!("Forbidden host: {}", host.name) }
                                         return if downstream.write_all(FORBIDDEN).is_ok() {
-                                            access_log.print(403, Some(0))
+                                            access_log.print(403, 0)
                                         }
                                     }
                                     _ if !is_hostname(&host.name) => {
                                         if verbosity >= 3 { eprintln!("Malformed host: {}", host.name) }
                                         return if downstream.write_all(BAD_REQUEST).is_ok() {
-                                            access_log.print(400, Some(0))
+                                            access_log.print(400, 0)
                                         }
                                     }
                                     _ => match resolver.resolve(&host.name) {
@@ -372,13 +372,13 @@ fn main() -> IoResult<()> {
                                         Ok(_) => {
                                             if verbosity >= 3 { eprintln!("Forbidden host: {}", host.name) }
                                             return if downstream.write_all(FORBIDDEN).is_ok() {
-                                                access_log.print(403, Some(0))
+                                                access_log.print(403, 0)
                                             }
                                         }
                                         _ => {
                                             if verbosity >= 1 { eprintln!("Name not resolved: {}", host.name) }
                                             return if downstream.write_all(BAD_GATEWAY).is_ok() {
-                                                access_log.print(502, Some(0))
+                                                access_log.print(502, 0)
                                             }
                                         }
                                     }
@@ -386,11 +386,11 @@ fn main() -> IoResult<()> {
                                 match TcpStream::connect((addr, port)) {
                                     Ok(upstream) => {
                                         match downstream.write_all(b"HTTP/1.1 200 OK\r\n\r\n") {
-                                            Ok(_) => access_log.print(200, None),
+                                            Ok(_) => access_log.print(200, "-"),
                                             Err(e) => {
                                                 if verbosity >= 2 { eprintln!("Error while writing headers to downstream: {}", remote_addr) }
                                                 if verbosity >= 2 { eprintln!("  {:?}", e) }
-                                                return access_log.print(499, None)
+                                                return access_log.print(499, "-")
                                             }
                                         }
                                         let mut downstream_reader = downstream.try_clone().unwrap();
@@ -444,7 +444,7 @@ fn main() -> IoResult<()> {
                                         if verbosity >= 1 { eprintln!("Error while connecting to upstream: {}", req.target) }
                                         if verbosity >= 2 { eprintln!("  {:?}", e) }
                                         return if downstream.write_all(BAD_GATEWAY).is_ok() {
-                                            access_log.print(502, Some(0))
+                                            access_log.print(502, 0)
                                         }
                                     }
                                 }
@@ -452,7 +452,7 @@ fn main() -> IoResult<()> {
                                 if uri.scheme != "http" {
                                     if verbosity >= 3 { eprintln!("Unsupported scheme: {}", uri.scheme) }
                                     return if downstream.write_all(NOT_IMPLEMENTED).is_ok() {
-                                        access_log.print(501, Some(0))
+                                        access_log.print(501, 0)
                                     }
                                 }
                                 let addr = match IpAddr::try_from(&uri.host) {
@@ -460,13 +460,13 @@ fn main() -> IoResult<()> {
                                     Ok(_) => {
                                         if verbosity >= 3 { eprintln!("Forbidden host: {}", uri.host) }
                                         return if downstream.write_all(FORBIDDEN).is_ok() {
-                                            access_log.print(403, Some(0))
+                                            access_log.print(403, 0)
                                         }
                                     }
                                     _ if !is_hostname(&uri.host.name) => {
                                         if verbosity >= 3 { eprintln!("Malformed host: {}", uri.host) }
                                         return if downstream.write_all(BAD_REQUEST).is_ok() {
-                                            access_log.print(400, Some(0))
+                                            access_log.print(400, 0)
                                         }
                                     }
                                     _ => match resolver.resolve(&uri.host.name) {
@@ -474,13 +474,13 @@ fn main() -> IoResult<()> {
                                         Ok(_) => {
                                             if verbosity >= 3 { eprintln!("Forbidden host: {}", uri.host) }
                                             return if downstream.write_all(FORBIDDEN).is_ok() {
-                                                access_log.print(403, Some(0))
+                                                access_log.print(403, 0)
                                             }
                                         }
                                         _ => {
                                             if verbosity >= 1 { eprintln!("Name not resolved: {}", uri.host) }
                                             return if downstream.write_all(BAD_GATEWAY).is_ok() {
-                                                access_log.print(502, Some(0))
+                                                access_log.print(502, 0)
                                             }
                                         }
                                     }
@@ -494,7 +494,7 @@ fn main() -> IoResult<()> {
                                             if verbosity >= 1 { eprintln!("Error while writing headers to upstream: {}", uri.host) }
                                             if verbosity >= 2 { eprintln!("  {:?}", e) }
                                             return if downstream.write_all(BAD_GATEWAY).is_ok() {
-                                                access_log.print(502, Some(0))
+                                                access_log.print(502, 0)
                                             }
                                         }
                                         if req.headers.contains("Expect", "100-continue") {
@@ -504,37 +504,37 @@ fn main() -> IoResult<()> {
                                                     if let Err(e) = res.write(&mut downstream) {
                                                         if verbosity >= 2 { eprintln!("Error while writing headers to downstream: {}", remote_addr) }
                                                         if verbosity >= 2 { eprintln!("  {:?}", e) }
-                                                        return access_log.print(499, Some(0))
+                                                        return access_log.print(499, 0)
                                                     }
                                                 }
                                                 Ok(res) => {
                                                     if res.status < 200 {
                                                         if verbosity >= 1 { eprintln!("Unsupported status: {}", res.status) }
                                                         return if downstream.write_all(NOT_IMPLEMENTED).is_ok() {
-                                                            access_log.print(501, Some(0))
+                                                            access_log.print(501, 0)
                                                         }
                                                     }
                                                     if let Err(e) = res.write(&mut downstream) {
                                                         if verbosity >= 2 { eprintln!("Error while writing headers to downstream: {}", remote_addr) }
                                                         if verbosity >= 2 { eprintln!("  {:?}", e) }
-                                                        return access_log.print(499, Some(0))
+                                                        return access_log.print(499, 0)
                                                     }
                                                     if !res.has_body() {
-                                                        return access_log.print(res.status, Some(0))
+                                                        return access_log.print(res.status, 0)
                                                     }
                                                     match copy_body(&res.headers, &mut response_reader, &mut downstream) {
                                                         Ok(sent) => {
-                                                            return access_log.print(res.status, Some(sent))
+                                                            return access_log.print(res.status, sent)
                                                         }
                                                         Err(Errors::I(e)) => {
                                                             if verbosity >= 1 { eprintln!("Error while reading body from upstream: {}", uri.host) }
                                                             if verbosity >= 2 { eprintln!("  {:?}", e) }
-                                                            return access_log.print(444, None)
+                                                            return access_log.print(444, "-")
                                                         }
                                                         Err(Errors::O(e)) => {
                                                             if verbosity >= 2 { eprintln!("Error while writing body to downstream: {}", remote_addr) }
                                                             if verbosity >= 2 { eprintln!("  {:?}", e) }
-                                                            return access_log.print(499, None)
+                                                            return access_log.print(499, "-")
                                                         }
                                                     }
                                                 }
@@ -542,29 +542,26 @@ fn main() -> IoResult<()> {
                                                     if verbosity >= 1 { eprintln!("Error while reading headers from upstream: {}", uri.host) }
                                                     if verbosity >= 2 { eprintln!("  {:?}", e) }
                                                     return if downstream.write_all(BAD_GATEWAY).is_ok() {
-                                                        access_log.print(502, Some(0))
+                                                        access_log.print(502, 0)
                                                     }
                                                 }
                                             }
                                         }
-                                        match req.method.as_str() {
-                                            "GET" | "HEAD" | "OPTIONS" => {}
-                                            _ => {
-                                                match copy_body(&req.headers, &mut request_reader, &mut upstream) {
-                                                    Err(Errors::I(e)) => {
-                                                        if verbosity >= 2 { eprintln!("Error while reading body from downstream: {}", remote_addr) }
-                                                        if verbosity >= 2 { eprintln!("  {:?}", e) }
-                                                        return access_log.print(499, Some(0))
-                                                    }
-                                                    Err(Errors::O(e)) => {
-                                                        if verbosity >= 1 { eprintln!("Error while writing body to upstream: {}", uri.host) }
-                                                        if verbosity >= 2 { eprintln!("  {:?}", e) }
-                                                        return if downstream.write_all(BAD_GATEWAY).is_ok() {
-                                                            access_log.print(502, Some(0))
-                                                        }
-                                                    }
-                                                    _ => {}
+                                        if !matches!(req.method.as_str(), "GET" | "HEAD" | "OPTIONS") {
+                                            match copy_body(&req.headers, &mut request_reader, &mut upstream) {
+                                                Err(Errors::I(e)) => {
+                                                    if verbosity >= 2 { eprintln!("Error while reading body from downstream: {}", remote_addr) }
+                                                    if verbosity >= 2 { eprintln!("  {:?}", e) }
+                                                    return access_log.print(499, 0)
                                                 }
+                                                Err(Errors::O(e)) => {
+                                                    if verbosity >= 1 { eprintln!("Error while writing body to upstream: {}", uri.host) }
+                                                    if verbosity >= 2 { eprintln!("  {:?}", e) }
+                                                    return if downstream.write_all(BAD_GATEWAY).is_ok() {
+                                                        access_log.print(502, 0)
+                                                    }
+                                                }
+                                                _ => {}
                                             }
                                         }
                                         let mut response_reader = BufReader::new(upstream);
@@ -573,31 +570,31 @@ fn main() -> IoResult<()> {
                                                 if res.status < 200 {
                                                     if verbosity >= 1 { eprintln!("Unsupported status: {}", res.status) }
                                                     return if downstream.write_all(NOT_IMPLEMENTED).is_ok() {
-                                                        access_log.print(501, Some(0))
+                                                        access_log.print(501, 0)
                                                     }
                                                 }
                                                 res.headers.push("Proxy-Connection", "close");
                                                 if let Err(e) = res.write(&mut downstream) {
                                                     if verbosity >= 2 { eprintln!("Error while writing headers to downstream: {}", remote_addr) }
                                                     if verbosity >= 2 { eprintln!("  {:?}", e) }
-                                                    return access_log.print(499, Some(0))
+                                                    return access_log.print(499, 0)
                                                 }
                                                 if req.method == "HEAD" || !res.has_body() {
-                                                    return access_log.print(res.status, Some(0))
+                                                    return access_log.print(res.status, 0)
                                                 }
                                                 match copy_body(&res.headers, &mut response_reader, &mut downstream) {
                                                     Ok(sent) => {
-                                                        return access_log.print(res.status, Some(sent))
+                                                        return access_log.print(res.status, sent)
                                                     }
                                                     Err(Errors::I(e)) => {
                                                         if verbosity >= 1 { eprintln!("Error while reading body from upstream: {}", uri.host) }
                                                         if verbosity >= 2 { eprintln!("  {:?}", e) }
-                                                        return access_log.print(444, None)
+                                                        return access_log.print(444, "-")
                                                     }
                                                     Err(Errors::O(e)) => {
                                                         if verbosity >= 2 { eprintln!("Error while writing body to downstream: {}", remote_addr) }
                                                         if verbosity >= 2 { eprintln!("  {:?}", e) }
-                                                        return access_log.print(499, None)
+                                                        return access_log.print(499, "-")
                                                     }
                                                 }
                                             }
@@ -605,7 +602,7 @@ fn main() -> IoResult<()> {
                                                 if verbosity >= 1 { eprintln!("Error while reading headers from upstream: {}", uri.host) }
                                                 if verbosity >= 2 { eprintln!("  {:?}", e) }
                                                 return if downstream.write_all(BAD_GATEWAY).is_ok() {
-                                                    access_log.print(502, Some(0))
+                                                    access_log.print(502, 0)
                                                 }
                                             }
                                         }
@@ -614,14 +611,14 @@ fn main() -> IoResult<()> {
                                         if verbosity >= 1 { eprintln!("Error while connecting to upstream: {}", uri.host) }
                                         if verbosity >= 2 { eprintln!("  {:?}", e) }
                                         return if downstream.write_all(BAD_GATEWAY).is_ok() {
-                                            access_log.print(502, Some(0))
+                                            access_log.print(502, 0)
                                         }
                                     }
                                 }
                             } else {
                                 if verbosity >= 3 { eprintln!("Bad request: {} {} {}", req.method, req.target, req.protocol) }
                                 return if downstream.write_all(BAD_REQUEST).is_ok() {
-                                    access_log.print(400, Some(0))
+                                    access_log.print(400, 0)
                                 }
                             }
                         }
