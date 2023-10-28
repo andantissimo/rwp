@@ -116,10 +116,10 @@ fn copy_chunked<R: BufRead, W: Write>(reader: &mut R, writer: &mut W) -> Result<
 }
 
 fn copy_body<R: BufRead, W: Write>(headers: &Headers, reader: &mut R, writer: &mut W) -> Result<u64, Errors> {
-    if let Some(len) = headers.get_content_length() {
-        match copy_exact(reader, writer, len) { Ok(_) => Ok(len), Err(e) => Err(e) }
-    } else if headers.contains("Transfer-Encoding", "chunked") {
+    if headers.contains("Transfer-Encoding", "chunked") {
         copy_chunked(reader, writer)
+    } else if let Some(len) = headers.get_content_length() {
+        match copy_exact(reader, writer, len) { Ok(_) => Ok(len), Err(e) => Err(e) }
     } else {
         copy_all(reader, writer)
     }
