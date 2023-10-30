@@ -176,21 +176,12 @@ impl Resolver {
     }
 
     fn get(&self, hostname: &str) -> Option<IpAddr> {
-        let hostname = hostname.to_ascii_lowercase();
-        let patterns = match hostname.find('.') {
-            Some(dot) => vec![hostname.clone(), format!("*{}", &hostname[dot..])],
-            None => vec![hostname.clone()],
-        };
-        let hosts = self.hosts.read().unwrap();
-        if let Some(addrs) = patterns.iter().find_map(|pat| hosts.get(pat)) {
-            return Some(addrs[0])
-        }
-        if let Some((_, addrs)) = hosts.iter().find(|(pat, _)| {
-            pat.starts_with("**.") && (hostname == &pat[3..] || hostname.ends_with(&pat[2..]))
-        }) {
-            return Some(addrs[0])
-        }
-        None
+        self.hosts.read().unwrap().iter().find(|(pat, _)| match pat.as_str() {
+            pat if !pat.starts_with("*.") => pat.eq_ignore_ascii_case(hostname),
+            pat => pat[2..].eq_ignore_ascii_case(hostname)
+                      || pat.len() <= hostname.len() && pat[1..].eq_ignore_ascii_case(&hostname[(hostname.len() + 1 - pat.len())..])
+        })
+        .map(|(_, addrs)| addrs[0])
     }
 
     fn resolve(&self, hostname: &str) -> IoResult<IpAddr> {
