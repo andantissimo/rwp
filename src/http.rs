@@ -81,9 +81,27 @@ fn read_line<R: BufRead>(reader: &mut R, buf: &mut Vec<u8>) -> IoResult<Option<u
 }
 
 impl Headers {
+    const NON_SEPARATABLE_NAMES: [&'static str; 15] = [
+        "Authorization",
+        "Date",
+        "Expires",
+        "If-Modified-Since",
+        "If-Range",
+        "If-Unmodified-Since",
+        "Last-Modified",
+        "Proxy-Authenticate",
+        "Proxy-Authorization",
+        "Range",
+        "Retry-After",
+        "Server",
+        "User-Agent",
+        "Warning",
+        "WWW-Authenticate",
+    ];
+
     fn value_separator(name: &str) -> fn(char) -> bool {
         if name.eq_ignore_ascii_case("Cookie") { return |c| c == ';' }
-        if name.eq_ignore_ascii_case("Server") { return |_| false }
+        if Self::NON_SEPARATABLE_NAMES.iter().any(|n| n.eq_ignore_ascii_case(name)) { return |_| false }
         |c| c == ','
     }
 
