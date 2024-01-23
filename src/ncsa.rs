@@ -45,7 +45,7 @@ pub struct Htpasswd {
 }
 
 impl Htpasswd {
-    const PATH: &str = ".htpasswd";
+    const PATH: &'static str = ".htpasswd";
 
     fn parse(data: &str) -> HashMap<String, (String, String)> {
         let mut entries = HashMap::new();
