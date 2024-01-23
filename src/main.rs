@@ -3,7 +3,7 @@ use std::env::args;
 use std::fmt::Display;
 use std::fs::{metadata, read_to_string};
 use std::io::{BufRead, BufReader, Error as IoError, ErrorKind as IoErrorKind, Read, Result as IoResult, Write};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
+use std::net::{IpAddr, Ipv6Addr, TcpListener, TcpStream, ToSocketAddrs};
 use std::process::exit;
 use std::sync::{Arc, RwLock};
 use std::thread::{sleep, spawn};
@@ -261,15 +261,15 @@ fn main() -> IoResult<()> {
         eprintln!("  -h, --help           Show this help message and exit");
         eprintln!("  -s, --silent         Decrease verbosity");
         eprintln!("  -v, --verbose        Increase verbosity");
-        eprintln!("  -4, --ipv4-only      Do not listen on IPv6");
+        eprintln!("  -a, --address <addr> Listen on address (default: [::])");
         eprintln!("  -l, --localhost      Allow localhost as upstream");
         eprintln!("  -H, --hosts <path>   Hosts files to be read in addition to /etc/hosts");
         eprintln!("  -p, --port <number>  Listen on port (default: 8080)");
         exit(code)
     };
-    let (verbosity, ipv4_only, localhost, hosts_files, port) = {
+    let (verbosity, address, localhost, hosts_files, port) = {
         let mut verbosity = 1;
-        let mut ipv4_only = false;
+        let mut address = IpAddr::V6(Ipv6Addr::UNSPECIFIED);
         let mut localhost = false;
         let mut hosts = vec!["/etc/hosts".into()];
         let mut port = 8080;
@@ -280,7 +280,10 @@ fn main() -> IoResult<()> {
                 "-s" | "--silent"    => verbosity -= 1,
                 "-v" | "--verbose"   => verbosity += 1,
                 "-vv"                => verbosity += 2,
-                "-4" | "--ipv4-only" => ipv4_only = true,
+                "-a" | "--address" => match iter.next().and_then(|v| v.parse().ok()) {
+                    Some(v) => address = v,
+                    None => print_help_and_exit(1)
+                }
                 "-l" | "--localhost" => localhost = true,
                 "-H" | "--hosts" => match iter.next() {
                     Some(v) => hosts.push(v),
@@ -293,18 +296,14 @@ fn main() -> IoResult<()> {
                 _ => print_help_and_exit(1)
             }
         }
-        (verbosity, ipv4_only, localhost, hosts, port)
+        (verbosity, address, localhost, hosts, port)
     };
     let forbid_loopback = !localhost;
     let resolver = Resolver::new(hosts_files, Duration::from_secs(120));
     #[cfg(feature = "htpasswd")]
     let htpasswd = Htpasswd::new();
 
-    let listener = TcpListener::bind(if ipv4_only {
-        SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), port)
-    } else {
-        SocketAddr::new(Ipv6Addr::UNSPECIFIED.into(), port)
-    })?;
+    let listener = TcpListener::bind((address, port))?;
     Ok(for incoming in listener.incoming() {
         match incoming {
             Ok(mut downstream) => {
